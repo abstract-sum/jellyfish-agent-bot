@@ -10,4 +10,8 @@ pub enum AppError {
     Runtime(String),
     #[error("tool error: {0}")]
     Tool(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
 }
