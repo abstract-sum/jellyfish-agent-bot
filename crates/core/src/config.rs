@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub model: String,
     pub workspace_root: PathBuf,
     pub log_filter: String,
+    pub enable_repo_tools: bool,
 }
 
 impl Default for AppConfig {
@@ -20,6 +21,7 @@ impl Default for AppConfig {
             model: "gpt-4o-mini".to_string(),
             workspace_root: PathBuf::from("."),
             log_filter: "info".to_string(),
+            enable_repo_tools: false,
         }
     }
 }
@@ -37,6 +39,15 @@ impl AppConfig {
 
         let model = env::var("RIG_MODEL").unwrap_or(default.model);
         let log_filter = env::var("RIG_LOG").unwrap_or(default.log_filter);
+        let enable_repo_tools = env::var("RIG_ENABLE_REPO_TOOLS")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(default.enable_repo_tools);
         let workspace_root = env::var("RIG_WORKSPACE_ROOT")
             .map(PathBuf::from)
             .unwrap_or(default.workspace_root);
@@ -60,6 +71,7 @@ impl AppConfig {
             model,
             workspace_root,
             log_filter,
+            enable_repo_tools,
         })
     }
 }
@@ -74,5 +86,6 @@ mod tests {
         assert_eq!(config.provider, ProviderKind::OpenAi);
         assert_eq!(config.model, "gpt-4o-mini");
         assert_eq!(config.workspace_root, PathBuf::from("."));
+        assert!(!config.enable_repo_tools);
     }
 }

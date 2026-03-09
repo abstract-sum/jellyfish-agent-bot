@@ -1,8 +1,8 @@
-# OpenClaw Architecture
+# Jellyfish Architecture
 
 ## Overview
 
-OpenClaw is organized as a Rust workspace with clear module boundaries.
+Jellyfish is organized as a Rust workspace with clear module boundaries.
 
 The architecture is designed to support gradual delivery:
 
@@ -12,6 +12,8 @@ The architecture is designed to support gradual delivery:
 - local execution starts from a CLI crate
 
 This keeps the codebase extensible without forcing early coupling between user interface, runtime, and execution details.
+
+Although the current Phase 1 implementation still includes repository-oriented tools, the product direction has shifted to a general personal assistant. The architecture remains valid because it separates assistant runtime concerns from any one tool domain.
 
 ## Workspace Layout
 
@@ -73,6 +75,7 @@ Responsibilities:
 - prompt templates
 - provider bootstrap in later phases
 - execution loop orchestration in later phases
+- user-context and memory integration in later phases
 
 Current status:
 
@@ -81,7 +84,7 @@ Current status:
 
 Why it exists:
 
-This crate isolates model-specific logic from both the CLI and the tool layer.
+This crate isolates model-specific logic from both the CLI and the tool layer, which is especially important now that the assistant may support multiple task domains instead of only code-related ones.
 
 ### `crates/tools`
 
@@ -96,6 +99,7 @@ Responsibilities:
 - tool metadata and schema
 - tool output shape
 - registry for future tool lookup and dispatch
+- later support domain-specific tool groups such as productivity, knowledge, and local automation
 
 Current status:
 
@@ -104,7 +108,7 @@ Current status:
 
 Why it exists:
 
-This crate allows tool capability to grow independently from runtime and interface concerns.
+This crate allows tool capability to grow independently from runtime and interface concerns. It also lets the product evolve away from code-centric tools toward more general assistant capabilities without reshaping the runtime.
 
 ### `crates/cli`
 
@@ -150,14 +154,14 @@ Constraints:
 The target runtime flow is:
 
 1. receive user input
-2. load session context
+2. load session and user context
 3. construct prompt and runtime request
 4. invoke model
 5. process tool calls if needed
 6. update session and event stream
 7. render result to the user
 
-Phase 0 only implements a stub version of this flow. Real model execution and real tool invocation begin in Phase 1.
+Phase 0 only implements a stub version of this flow. Phase 1 begins real model execution and tool invocation, but the long-term target is an assistant-centered flow rather than a repository-automation loop.
 
 ## Session And Event Model
 
@@ -172,6 +176,8 @@ Session is responsible for:
 - ordered event history
 
 This gives later phases a place to attach persistence, replay, and observability without redesigning the basic state model.
+
+In the personal assistant direction, session should eventually also capture user preferences, recurring tasks, and lightweight memory references.
 
 ### Event
 
@@ -198,6 +204,8 @@ The early config model should remain small:
 
 This is enough for Phase 1 while still leaving room for later expansion into timeout settings, tool permissions, and persistence configuration.
 
+As the project shifts toward a personal assistant, configuration will likely expand to cover memory settings, user profile sources, and service integrations.
+
 ## Architectural Non-Goals For Early Phases
 
 The architecture intentionally avoids the following in the early stages:
@@ -207,6 +215,8 @@ The architecture intentionally avoids the following in the early stages:
 - complex policy engines
 - heavy persistence integration before the core loop is stable
 - UI-specific data modeling in shared crates
+
+It also avoids locking the product into a repository-centric mental model. Code tools may remain available, but they should become optional capabilities rather than the defining architecture.
 
 ## Phase 0 Outcome
 

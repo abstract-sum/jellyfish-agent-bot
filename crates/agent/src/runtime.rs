@@ -10,8 +10,8 @@ use rig::{
     providers::openai,
 };
 
-use openclaw_core::{AgentEvent, AppConfig, AppError, AppResult, EventKind};
-use openclaw_tools::{GlobTool, GrepTool, ReadTool, ToolRegistry};
+use jellyfish_core::{AgentEvent, AppConfig, AppError, AppResult, EventKind, Session};
+use jellyfish_tools::{ApplyPatchTool, GlobTool, GrepTool, ReadTool, ToolRegistry};
 
 use crate::{prompt::PromptTemplate, traits::AgentRuntime};
 
@@ -20,6 +20,7 @@ const MAX_TOOL_TURNS: usize = 4;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRequest {
     pub input: String,
+    pub session: Option<Session>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -38,9 +39,9 @@ struct AgentStep {
 
 pub fn build_runtime(config: AppConfig) -> AppResult<Box<dyn AgentRuntime>> {
     match config.provider {
-        openclaw_core::ProviderKind::OpenAi => Ok(Box::new(RigAgentRuntime::new(config))),
-        openclaw_core::ProviderKind::Mock => Ok(Box::new(MockAgentRuntime::new(config))),
-        openclaw_core::ProviderKind::Anthropic => Err(AppError::Config(
+        jellyfish_core::ProviderKind::OpenAi => Ok(Box::new(RigAgentRuntime::new(config))),
+        jellyfish_core::ProviderKind::Mock => Ok(Box::new(MockAgentRuntime::new(config))),
+        jellyfish_core::ProviderKind::Anthropic => Err(AppError::Config(
             "anthropic provider is not wired yet in Phase 1".to_string(),
         )),
     }
@@ -55,13 +56,16 @@ pub struct RigAgentRuntime {
 impl RigAgentRuntime {
     pub fn new(config: AppConfig) -> Self {
         let mut tools = ToolRegistry::new();
-        tools.register(ReadTool::new(config.workspace_root.clone()));
-        tools.register(GlobTool::new(config.workspace_root.clone()));
-        tools.register(GrepTool::new(config.workspace_root.clone()));
+        if config.enable_repo_tools {
+            tools.register(ReadTool::new(config.workspace_root.clone()));
+            tools.register(GlobTool::new(config.workspace_root.clone()));
+            tools.register(GrepTool::new(config.workspace_root.clone()));
+            tools.register(ApplyPatchTool::new(config.workspace_root.clone()));
+        }
 
         Self {
             config,
-            prompt: PromptTemplate::coding_assistant(),
+            prompt: PromptTemplate::personal_assistant(),
             tools,
         }
     }
@@ -83,6 +87,10 @@ impl RigAgentRuntime {
     }
 
     fn tool_instructions(&self) -> String {
+        if self.tools.is_empty() {
+            return "- none enabled".to_string();
+        }
+
         self.tools
             .definitions()
             .into_iter()
@@ -96,27 +104,75 @@ impl RigAgentRuntime {
             .join("\n")
     }
 
-    fn build_step_prompt(&self, user_input: &str, transcript: &[String]) -> String {
+    fn memory_context(&self, session: Option<&Session>) -> String {
+        let Some(session) = session else {
+            return "No remembered user context yet.".to_string();
+        };
+
+        let display_name = session
+            .profile
+            .display_name
+            .as_deref()
+            .unwrap_or("unknown");
+        let locale = session.profile.locale.as_deref().unwrap_or("unknown");
+        let timezone = session.profile.timezone.as_deref().unwrap_or("unknown");
+        let preferences = if session.profile.preferences.is_empty() {
+            "none".to_string()
+        } else {
+            session
+                .profile
+                .preferences
+                .iter()
+                .map(|entry| format!("{}={}", entry.key, entry.value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let memories = {
+            let items = session.memory_summary(5);
+            if items.is_empty() {
+                "none".to_string()
+            } else {
+                items.join(" | ")
+            }
+        };
+
+        format!(
+            "User profile: display_name={display_name}, locale={locale}, timezone={timezone}. Preferences: {preferences}. Recent memories: {memories}."
+        )
+    }
+
+    fn build_step_prompt(&self, user_input: &str, transcript: &[String], session: Option<&Session>) -> String {
         let transcript = if transcript.is_empty() {
             "No tool interactions yet.".to_string()
         } else {
             transcript.join("\n\n")
         };
+        let memory_context = self.memory_context(session);
+
+        let tool_usage_guidance = if self.tools.is_empty() {
+            "No tools are enabled for this run. Answer directly using conversation context and remembered user context."
+                .to_string()
+        } else {
+            "If you need additional local context, you may return {\"kind\":\"tool\",\"tool_name\":\"...\",\"input\":{...}}."
+                .to_string()
+        };
 
         format!(
             concat!(
-                "Decide the next step for this coding request.\n",
+                "Decide the next step for this personal assistant request.\n",
+                "Remembered user context:\n{memory_context}\n\n",
                 "Available tools:\n{tools}\n\n",
+                "Tool guidance:\n{tool_usage_guidance}\n\n",
                 "Conversation state:\n{transcript}\n\n",
                 "User request:\n{user_input}\n\n",
                 "Return JSON only.\n",
-                "If you need repository context, return:\n",
-                "{{\"kind\":\"tool\",\"tool_name\":\"read|glob|grep\",\"input\":{{...}}}}\n",
                 "If you can answer, return:\n",
                 "{{\"kind\":\"respond\",\"message\":\"final answer\"}}\n",
                 "Do not include markdown fences or explanatory text outside JSON."
             ),
+            memory_context = memory_context,
             tools = self.tool_instructions(),
+            tool_usage_guidance = tool_usage_guidance,
             transcript = transcript,
             user_input = user_input,
         )
@@ -149,10 +205,11 @@ impl AgentRuntime for RigAgentRuntime {
             message: request.input.clone(),
         }];
         let mut transcript = Vec::new();
+        let session = request.session.as_ref();
 
         for turn in 0..MAX_TOOL_TURNS {
             info!(turn, "running agent turn");
-            let prompt = self.build_step_prompt(&request.input, &transcript);
+            let prompt = self.build_step_prompt(&request.input, &transcript, session);
             let raw = self.prompt_model(&prompt).await?;
 
             let Some(step) = Self::parse_step(&raw) else {
@@ -176,6 +233,14 @@ impl AgentRuntime for RigAgentRuntime {
                 "tool" => {
                     let tool_name = step.tool_name.unwrap_or_default();
                     let input = step.input.unwrap_or_else(|| json!({}));
+
+                    if self.tools.is_empty() {
+                        events.push(AgentEvent {
+                            kind: EventKind::System,
+                            message: "Model requested a tool, but no tools are enabled".to_string(),
+                        });
+                        return Ok(Self::fallback_response(raw, events));
+                    }
 
                     events.push(AgentEvent {
                         kind: EventKind::ToolCall,
@@ -203,7 +268,8 @@ impl AgentRuntime for RigAgentRuntime {
         }
 
         let prompt = format!(
-            "The tool turn limit was reached. Based on this gathered context, answer the user directly.\n\nContext:\n{}\n\nUser request:\n{}",
+            "The tool turn limit was reached. Answer the personal assistant request directly using the gathered context and remembered user context.\n\nRemembered user context:\n{}\n\nContext:\n{}\n\nUser request:\n{}",
+            self.memory_context(session),
             transcript.join("\n\n"),
             request.input
         );
@@ -225,9 +291,12 @@ pub struct MockAgentRuntime {
 impl MockAgentRuntime {
     pub fn new(config: AppConfig) -> Self {
         let mut tools = ToolRegistry::new();
-        tools.register(ReadTool::new(config.workspace_root.clone()));
-        tools.register(GlobTool::new(config.workspace_root.clone()));
-        tools.register(GrepTool::new(config.workspace_root.clone()));
+        if config.enable_repo_tools {
+            tools.register(ReadTool::new(config.workspace_root.clone()));
+            tools.register(GlobTool::new(config.workspace_root.clone()));
+            tools.register(GrepTool::new(config.workspace_root.clone()));
+            tools.register(ApplyPatchTool::new(config.workspace_root.clone()));
+        }
 
         Self { config, tools }
     }
@@ -236,11 +305,15 @@ impl MockAgentRuntime {
 #[async_trait]
 impl AgentRuntime for MockAgentRuntime {
     async fn run(&self, request: AgentRequest) -> AppResult<AgentResponse> {
-        let tool_names = self.tools.names().join(", ");
+        let tool_names = if self.tools.is_empty() {
+            "none".to_string()
+        } else {
+            self.tools.names().join(", ")
+        };
 
         Ok(AgentResponse {
             message: format!(
-                "Mock runtime active for model {}. Input: {}",
+                "Mock personal assistant runtime active for model {}. Input: {}",
                 self.config.model, request.input
             ),
             events: vec![
@@ -251,6 +324,20 @@ impl AgentRuntime for MockAgentRuntime {
                 AgentEvent {
                     kind: EventKind::System,
                     message: format!("Registered tools: {}", tool_names),
+                },
+                AgentEvent {
+                    kind: EventKind::System,
+                    message: match request.session.as_ref() {
+                        Some(session) => format!(
+                            "Memory available: {} profile fields, {} memory entries",
+                            usize::from(session.profile.display_name.is_some())
+                                + usize::from(session.profile.locale.is_some())
+                                + usize::from(session.profile.timezone.is_some())
+                                + session.profile.preferences.len(),
+                            session.memories.len()
+                        ),
+                        None => "Memory available: none".to_string(),
+                    },
                 },
             ],
         })

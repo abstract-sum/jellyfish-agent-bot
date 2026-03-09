@@ -1,4 +1,4 @@
-use openclaw_agent::AgentResponse;
+use jellyfish_agent::AgentResponse;
 
 pub fn print_agent_response(response: &AgentResponse) {
     println!("{}", response.message);

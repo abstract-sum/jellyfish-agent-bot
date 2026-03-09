@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use openclaw_core::{AppError, AppResult};
+use jellyfish_core::{AppError, AppResult};
 
 use crate::traits::Tool;
 

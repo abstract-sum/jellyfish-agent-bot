@@ -1,6 +1,6 @@
-# OpenClaw Docs
+# Jellyfish Docs
 
-This directory contains the detailed planning and architecture documents for the OpenClaw project.
+This directory contains the detailed planning and architecture documents for the Jellyfish project.
 
 For the repository overview, start with the root `README.md`.
 

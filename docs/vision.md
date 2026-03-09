@@ -1,14 +1,14 @@
-# OpenClaw Vision
+# Jellyfish Vision
 
 ## Project Goal
 
-OpenClaw is a Rig-based coding agent project implemented in phases.
+Jellyfish is a Rig-based personal assistant project implemented in phases.
 
-The goal is to build a practical AI coding assistant on a stable Rust foundation:
+The goal is to build a practical AI personal assistant on a stable Rust foundation:
 
 - start from the smallest useful workflow
 - validate the core agent loop first
-- expand gradually into repository understanding, tool execution, memory, and orchestration
+- expand gradually into memory, user context, utility tools, and orchestration
 
 ## Product Direction
 
@@ -16,12 +16,12 @@ The current product direction is:
 
 - CLI-first
 - single-agent first
-- tool-enabled coding workflow
+- tool-enabled assistant workflow
 - incremental delivery by phase
 
 The first useful workflow is:
 
-user request -> agent reasoning -> tool usage -> code modification -> validation -> result summary
+user request -> assistant reasoning -> tool usage when needed -> result summary -> remembered context for later
 
 ## Product Principles
 
@@ -53,7 +53,7 @@ Complex capabilities should only be added when the previous layer is already rel
 
 The following decisions are already confirmed:
 
-- product type: Rig-based AI coding agent platform
+- product type: Rig-based AI personal assistant platform
 - development order: core functionality first, then gradual expansion
 - interaction model: no Plan Mode / Execute Mode split for now
 - interface priority: CLI before API or web UI
@@ -64,9 +64,8 @@ The following decisions are already confirmed:
 The following items are intentionally deferred:
 
 - Plan Mode / Execute Mode
-- full permission sandbox
+- broad automation over local repositories
 - long-term memory store
-- PR automation
 - browser UI
 - distributed worker model
 

@@ -1,12 +1,12 @@
-# OpenClaw
+# Jellyfish
 
-OpenClaw is a Rig-based AI coding agent project built in phases.
+Jellyfish is a Rig-based AI personal assistant project built in phases.
 
 The current implementation focus is:
 
 - CLI-first
 - single-agent first
-- core coding workflow before advanced platform features
+- core assistant workflow before advanced platform features
 
 ## Current Status
 
@@ -38,10 +38,20 @@ Implemented so far:
 - `docs/roadmap.md`: phased implementation plan and milestones
 - `docs/README.md`: documentation index
 
+## Product Direction
+
+Jellyfish is being positioned as a general personal assistant rather than a code agent.
+
+That means the long-term priorities are:
+
+- conversation and task assistance first
+- memory and user context before code execution
+- optional tools for utility tasks, not repo automation as the primary value
+
 ## Next Step
 
 The next implementation target is Phase 1:
 
 - integrate Rig runtime support
-- add initial repository tools
+- add initial assistant-facing tools
 - connect the CLI to a real agent execution path

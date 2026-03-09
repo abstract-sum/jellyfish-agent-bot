@@ -804,6 +804,58 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
+name = "jellyfish-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "jellyfish-core",
+ "jellyfish-tools",
+ "rig-core",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "jellyfish-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "jellyfish-agent",
+ "jellyfish-core",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "jellyfish-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "jellyfish-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "glob",
+ "jellyfish-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "walkdir",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -977,57 +1029,6 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
-
-[[package]]
-name = "openclaw-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "openclaw-core",
- "openclaw-tools",
- "rig-core",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "openclaw-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "openclaw-agent",
- "openclaw-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "openclaw-core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "openclaw-tools"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "glob",
- "openclaw-core",
- "regex",
- "serde",
- "serde_json",
- "tokio",
- "walkdir",
-]
 
 [[package]]
 name = "openssl-probe"

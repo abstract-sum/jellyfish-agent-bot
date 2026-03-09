@@ -1,10 +1,12 @@
 mod args;
+mod memory;
 mod output;
+mod session_store;
 
 use anyhow::Result;
 use clap::Parser;
-use openclaw_agent::{AgentRequest, build_runtime};
-use openclaw_core::{AppConfig, ProviderKind};
+use jellyfish_agent::{AgentRequest, build_runtime};
+use jellyfish_core::{AppConfig, MessageRole, ProviderKind};
 use std::env;
 use tracing_subscriber::EnvFilter;
 
@@ -23,8 +25,37 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Chat { input } => {
             let runtime = build_runtime(config.clone())?;
-            let response = runtime.run(AgentRequest { input }).await?;
+            let mut session = session_store::load_or_create(&config.workspace_root)?;
+            if session.profile.display_name.is_none() {
+                session.set_display_name("User");
+            }
+            if session.profile.preferences.is_empty() {
+                session.set_preference("assistant_style", "concise");
+            }
+
+            session.push_message(MessageRole::User, input.clone());
+            let memory_updates = memory::apply_memory_updates(&mut session, &input);
+
+            let response = runtime
+                .run(AgentRequest {
+                    input,
+                    session: Some(session.clone()),
+                })
+                .await?;
+
+            session.push_message(MessageRole::Assistant, response.message.clone());
+            for event in &response.events {
+                session.push_event(event.clone());
+            }
+            let session_path = session_store::save(&config.workspace_root, &session)?;
+
             output::print_agent_response(&response);
+            if !memory_updates.is_empty() {
+                for update in memory_updates {
+                    println!("- [Memory] {}", update);
+                }
+            }
+            println!("- [Session] Saved to {}", session_path.display());
         }
         Commands::Doctor => {
             let runtime_status = build_runtime(config.clone())
@@ -39,12 +70,17 @@ async fn main() -> Result<()> {
                 ProviderKind::Anthropic => "anthropic provider is not wired yet".to_string(),
             };
 
-            println!("OpenClaw Phase 1 scaffold is healthy.");
+            println!("Jellyfish Phase 1 scaffold is healthy.");
             println!("Provider: {}", config.provider.as_str());
             println!("Model: {}", config.model);
             println!("Workspace root: {}", config.workspace_root.display());
             println!("Runtime: {}", runtime_status);
             println!("Credentials: {}", credential_status);
+            println!("Repo tools enabled: {}", config.enable_repo_tools);
+            println!(
+                "Session file: {}",
+                session_store::session_file_path(&config.workspace_root).display()
+            );
         }
     }
 

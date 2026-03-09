@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use walkdir::WalkDir;
 
-use openclaw_core::{AppError, AppResult};
+use jellyfish_core::{AppError, AppResult};
 
 use crate::traits::{Tool, ToolDefinition, ToolOutput};
 
@@ -210,6 +210,270 @@ impl Tool for GrepTool {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ApplyPatchTool {
+    workspace_root: PathBuf,
+}
+
+impl ApplyPatchTool {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplyPatchArgs {
+    patch: String,
+}
+
+#[derive(Debug)]
+enum PatchOperation {
+    Add {
+        path: String,
+        lines: Vec<String>,
+    },
+    Delete {
+        path: String,
+    },
+    Update {
+        path: String,
+        move_to: Option<String>,
+        hunks: Vec<PatchHunk>,
+    },
+}
+
+#[derive(Debug)]
+struct PatchHunk {
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+}
+
+#[async_trait]
+impl Tool for ApplyPatchTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "apply_patch".to_string(),
+            description: "Apply a structured patch to files inside the workspace".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "patch": {
+                        "type": "string",
+                        "description": "Patch text using the simplified *** Begin Patch / *** End Patch format"
+                    }
+                },
+                "required": ["patch"]
+            }),
+        }
+    }
+
+    async fn call(&self, input: Value) -> AppResult<ToolOutput> {
+        let args: ApplyPatchArgs = serde_json::from_value(input)?;
+        let operations = parse_patch(&args.patch)?;
+        let mut results = Vec::new();
+
+        for operation in operations {
+            match operation {
+                PatchOperation::Add { path, lines } => {
+                    let resolved = resolve_workspace_path(&self.workspace_root, &path)?;
+                    if resolved.exists() {
+                        return Err(AppError::Tool(format!("file already exists: {path}")));
+                    }
+
+                    if let Some(parent) = resolved.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+
+                    let content = join_lines(&lines);
+                    fs::write(&resolved, content)?;
+                    results.push(format!("added {path}"));
+                }
+                PatchOperation::Delete { path } => {
+                    let resolved = resolve_workspace_path(&self.workspace_root, &path)?;
+                    if !resolved.exists() {
+                        return Err(AppError::Tool(format!("file does not exist: {path}")));
+                    }
+
+                    fs::remove_file(&resolved)?;
+                    results.push(format!("deleted {path}"));
+                }
+                PatchOperation::Update {
+                    path,
+                    move_to,
+                    hunks,
+                } => {
+                    let resolved = resolve_workspace_path(&self.workspace_root, &path)?;
+                    let original = fs::read_to_string(&resolved)?;
+                    let mut current_lines = split_lines_preserve_newlines(&original);
+
+                    for hunk in hunks {
+                        apply_hunk(&mut current_lines, &hunk, &path)?;
+                    }
+
+                    let updated_path = move_to.unwrap_or(path);
+                    let resolved_updated = resolve_workspace_path(&self.workspace_root, &updated_path)?;
+                    if let Some(parent) = resolved_updated.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+
+                    fs::write(&resolved_updated, join_lines(&current_lines))?;
+                    if resolved != resolved_updated {
+                        fs::remove_file(&resolved)?;
+                    }
+
+                    results.push(format!("updated {updated_path}"));
+                }
+            }
+        }
+
+        Ok(ToolOutput {
+            content: results.join("\n"),
+        })
+    }
+}
+
+fn join_lines(lines: &[String]) -> String {
+    lines.concat()
+}
+
+fn split_lines_preserve_newlines(content: &str) -> Vec<String> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+
+    content
+        .split_inclusive('\n')
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn parse_patch(patch: &str) -> AppResult<Vec<PatchOperation>> {
+    let lines = patch.lines().collect::<Vec<_>>();
+    if lines.first().copied() != Some("*** Begin Patch") {
+        return Err(AppError::Tool(
+            "patch must start with *** Begin Patch".to_string(),
+        ));
+    }
+    if lines.last().copied() != Some("*** End Patch") {
+        return Err(AppError::Tool(
+            "patch must end with *** End Patch".to_string(),
+        ));
+    }
+
+    let mut operations = Vec::new();
+    let mut index = 1;
+
+    while index < lines.len() - 1 {
+        let line = lines[index];
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            index += 1;
+            let mut add_lines = Vec::new();
+            while index < lines.len() - 1 && !lines[index].starts_with("*** ") {
+                let body = lines[index]
+                    .strip_prefix('+')
+                    .ok_or_else(|| AppError::Tool("add file lines must start with +".to_string()))?;
+                add_lines.push(format!("{body}\n"));
+                index += 1;
+            }
+            operations.push(PatchOperation::Add {
+                path: path.to_string(),
+                lines: add_lines,
+            });
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            operations.push(PatchOperation::Delete {
+                path: path.to_string(),
+            });
+            index += 1;
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            index += 1;
+            let mut move_to = None;
+            if index < lines.len() - 1 {
+                if let Some(target) = lines[index].strip_prefix("*** Move to: ") {
+                    move_to = Some(target.to_string());
+                    index += 1;
+                }
+            }
+
+            let mut hunks = Vec::new();
+            while index < lines.len() - 1 && !lines[index].starts_with("*** ") {
+                if !lines[index].starts_with("@@") {
+                    return Err(AppError::Tool(format!(
+                        "expected hunk header in update for {path}"
+                    )));
+                }
+
+                index += 1;
+                let mut old_lines = Vec::new();
+                let mut new_lines = Vec::new();
+                while index < lines.len() - 1
+                    && !lines[index].starts_with("@@")
+                    && !lines[index].starts_with("*** ")
+                {
+                    let hunk_line = lines[index];
+                    let (prefix, body) = hunk_line.split_at(1);
+                    match prefix {
+                        " " => {
+                            old_lines.push(format!("{body}\n"));
+                            new_lines.push(format!("{body}\n"));
+                        }
+                        "-" => old_lines.push(format!("{body}\n")),
+                        "+" => new_lines.push(format!("{body}\n")),
+                        _ => {
+                            return Err(AppError::Tool(format!(
+                                "unsupported hunk line in update for {path}: {hunk_line}"
+                            )))
+                        }
+                    }
+                    index += 1;
+                }
+
+                hunks.push(PatchHunk { old_lines, new_lines });
+            }
+
+            operations.push(PatchOperation::Update {
+                path: path.to_string(),
+                move_to,
+                hunks,
+            });
+            continue;
+        }
+
+        return Err(AppError::Tool(format!("unsupported patch header: {line}")));
+    }
+
+    Ok(operations)
+}
+
+fn apply_hunk(lines: &mut Vec<String>, hunk: &PatchHunk, path: &str) -> AppResult<()> {
+    if hunk.old_lines.is_empty() {
+        lines.extend(hunk.new_lines.clone());
+        return Ok(());
+    }
+
+    let old_len = hunk.old_lines.len();
+    let mut start = None;
+
+    for index in 0..=lines.len().saturating_sub(old_len) {
+        if lines[index..index + old_len] == hunk.old_lines[..] {
+            start = Some(index);
+            break;
+        }
+    }
+
+    let start = start.ok_or_else(|| {
+        AppError::Tool(format!("failed to match update hunk in file: {path}"))
+    })?;
+
+    lines.splice(start..start + old_len, hunk.new_lines.clone());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -228,7 +492,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let unique = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("openclaw-tools-{suffix}-{unique}"));
+        let root = std::env::temp_dir().join(format!("jellyfish-tools-{suffix}-{unique}"));
         fs::create_dir_all(&root).unwrap();
         root
     }
@@ -268,6 +532,41 @@ mod tests {
         let output = tool.call(json!({ "pattern": "demo" })).await.unwrap();
 
         assert!(output.content.contains("src/lib.rs:1"));
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn apply_patch_tool_updates_existing_file() {
+        let workspace = temp_workspace();
+        fs::write(workspace.join("sample.txt"), "hello\nworld\n").unwrap();
+
+        let tool = ApplyPatchTool::new(workspace.clone());
+        let output = tool
+            .call(json!({
+                "patch": "*** Begin Patch\n*** Update File: sample.txt\n@@\n-hello\n+hi\n world\n*** End Patch"
+            }))
+            .await
+            .unwrap();
+
+        assert!(output.content.contains("updated sample.txt"));
+        let updated = fs::read_to_string(workspace.join("sample.txt")).unwrap();
+        assert_eq!(updated, "hi\nworld\n");
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn apply_patch_tool_adds_new_file() {
+        let workspace = temp_workspace();
+
+        let tool = ApplyPatchTool::new(workspace.clone());
+        tool.call(json!({
+            "patch": "*** Begin Patch\n*** Add File: src/new.rs\n+pub fn created() {}\n*** End Patch"
+        }))
+        .await
+        .unwrap();
+
+        let created = fs::read_to_string(workspace.join("src/new.rs")).unwrap();
+        assert_eq!(created, "pub fn created() {}\n");
         fs::remove_dir_all(workspace).unwrap();
     }
 }

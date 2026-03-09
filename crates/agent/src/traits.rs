@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use openclaw_core::AppResult;
+use jellyfish_core::AppResult;
 
 use crate::runtime::{AgentRequest, AgentResponse};
 

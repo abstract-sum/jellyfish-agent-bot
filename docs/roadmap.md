@@ -1,8 +1,8 @@
-# OpenClaw Roadmap
+# Jellyfish Roadmap
 
 ## Delivery Strategy
 
-OpenClaw is delivered in phases.
+Jellyfish is delivered in phases.
 
 The guiding strategy is:
 
@@ -50,25 +50,25 @@ Completed.
 
 ### Goal
 
-Implement the smallest useful OpenClaw workflow: a real Rig-backed agent that can answer questions and operate on repository context through a minimal toolset.
+Implement the smallest useful Jellyfish workflow: a real Rig-backed assistant that can hold a conversation, answer questions, and use a minimal toolset when necessary.
 
 ### Scope
 
 - integrate `rig-core`
 - configure one provider first
 - create a real runtime in `crates/agent`
-- implement read-only repository tools first
+- implement the first utility tools
 - wire `chat` command to real model execution
 
 ### Initial Tool Set
 
 Recommended order:
 
-1. `read`
-2. `glob`
-3. `grep`
-4. `apply_patch`
-5. `bash`
+1. conversation-only runtime
+2. lightweight local knowledge tools
+3. memory/session helpers
+4. optional file tools
+5. optional command tools
 
 ### Key Work Items
 
@@ -76,7 +76,7 @@ Recommended order:
 
 - add Rig dependency
 - create provider client bootstrap
-- define a system prompt for coding assistant behavior
+- define a system prompt for personal assistant behavior
 - transform session messages into Rig-compatible requests
 - return a normalized `AgentResponse`
 
@@ -86,6 +86,7 @@ Recommended order:
 - align tool definitions with model-callable schema
 - add registry lookup and invocation plumbing
 - surface tool events back into the session/event model
+- keep code-oriented tools optional rather than foundational
 
 #### CLI integration
 
@@ -95,22 +96,22 @@ Recommended order:
 
 ### Acceptance Criteria
 
-- user can ask a repository question in the CLI
+- user can ask a general question in the CLI
 - runtime reaches a real model provider
-- agent can use at least one read-only tool
+- assistant can use at least one basic tool when needed
 - responses are visible in the terminal and mapped into event records
 
 ## Phase 2 - Stable Execution Layer
 
 ### Goal
 
-Make the single-agent workflow robust enough for iterative coding tasks.
+Make the single-agent workflow robust enough for recurring personal assistant tasks.
 
 ### Scope
 
 - session persistence
 - better runtime error handling
-- command timeout and output truncation
+- tool timeout and output truncation
 - tool execution event stream
 - structured tracing and observability
 
@@ -130,7 +131,7 @@ Make the single-agent workflow robust enough for iterative coding tasks.
 
 - repeated CLI interactions can preserve state
 - tool failures are recoverable and visible
-- long-running or noisy commands are controlled
+- long-running or noisy tool outputs are controlled
 - runtime behavior is observable through logs and events
 
 ## Phase 3 - Interaction Experience Enhancements
@@ -161,20 +162,20 @@ Do not split the product into separate planning and execution modes in this phas
 
 ### Goal
 
-Enable repository-aware and history-aware reasoning.
+Enable user-aware and history-aware reasoning.
 
 ### Scope
 
-- repository indexing
+- user profile and preference storage
 - embeddings
 - vector search
-- reusable memory for prior tasks
+- reusable memory for prior tasks and prior conversations
 
 ### Notes
 
 Suggested progression:
 
-- start with simple local indexing
+- start with simple local memory
 - evaluate `rig-sqlite` or a lightweight vector backend
 - keep retrieval optional at runtime
 
@@ -182,16 +183,16 @@ Suggested progression:
 
 ### Goal
 
-Expand beyond one runtime loop only after the single-agent path is stable.
+Expand beyond one runtime loop only after the single-assistant path is stable.
 
 ### Scope
 
 Potential roles:
 
 - planner
-- coder
-- reviewer
+- organizer
 - researcher
+- action executor
 
 ### Constraint
 
@@ -218,29 +219,29 @@ Real model call from CLI.
 
 ### M2
 
-Repository read tools available.
+Basic assistant tool usage available.
 
 ### M3
 
-File modification workflow available.
+Persistent session and memory workflow available.
 
 ### M4
 
-Validation command execution available.
+User-oriented utility actions available.
 
 ### M5
 
-Single-agent coding task loop is stable.
+Single-assistant task loop is stable.
 
 ## Phase 1 Recommended Implementation Order
 
 1. add `rig-core` to `crates/agent`
 2. create provider bootstrap from environment config
 3. replace the stub runtime with a real runtime adapter
-4. implement `read`
-5. implement `glob`
-6. implement `grep`
-7. wire tool registration into the runtime
-8. update CLI `chat` to use the real runtime
-9. add basic runtime tests
-10. polish logging and event output
+4. simplify the prompt for assistant-first behavior
+5. wire tool registration into the runtime
+6. add the first non-code-centric tool
+7. update CLI `chat` to use the real runtime
+8. add basic runtime tests
+9. polish logging and event output
+10. begin memory/session persistence planning

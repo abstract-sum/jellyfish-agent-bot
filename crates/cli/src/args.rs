@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "openclaw", version, about = "OpenClaw CLI scaffold")]
+#[command(
+    name = "jellyfish",
+    version,
+    about = "Jellyfish personal assistant CLI"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
