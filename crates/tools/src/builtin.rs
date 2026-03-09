@@ -11,6 +11,10 @@ use jellyfish_core::{AppError, AppResult};
 
 use crate::traits::{Tool, ToolDefinition, ToolOutput};
 
+const JELLYFISH_DIR: &str = ".jellyfish";
+const NOTES_FILE: &str = "notes.json";
+const TODOS_FILE: &str = "todos.json";
+
 fn ensure_relative_path(path: &Path) -> AppResult<()> {
     if path.is_absolute() {
         return Err(AppError::Tool("absolute paths are not allowed".to_string()));
@@ -32,6 +36,29 @@ fn resolve_workspace_path(workspace_root: &Path, relative: &str) -> AppResult<Pa
     let relative_path = Path::new(relative);
     ensure_relative_path(relative_path)?;
     Ok(workspace_root.join(relative_path))
+}
+
+fn jellyfish_data_path(workspace_root: &Path, file_name: &str) -> PathBuf {
+    workspace_root.join(JELLYFISH_DIR).join(file_name)
+}
+
+fn ensure_data_parent(path: &Path) -> AppResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
+struct StoredNote {
+    title: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
+struct StoredTodo {
+    text: String,
+    done: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +235,204 @@ impl Tool for GrepTool {
             },
         })
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct NoteTool {
+    workspace_root: PathBuf,
+}
+
+impl NoteTool {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct NoteArgs {
+    action: String,
+    title: Option<String>,
+    content: Option<String>,
+}
+
+#[async_trait]
+impl Tool for NoteTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "notes".to_string(),
+            description: "Save or list personal notes stored in Jellyfish local state".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "list or add"},
+                    "title": {"type": "string"},
+                    "content": {"type": "string"}
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    async fn call(&self, input: Value) -> AppResult<ToolOutput> {
+        let args: NoteArgs = serde_json::from_value(input)?;
+        let path = jellyfish_data_path(&self.workspace_root, NOTES_FILE);
+        let mut notes = load_json_or_default::<Vec<StoredNote>>(&path)?;
+
+        match args.action.as_str() {
+            "list" => Ok(ToolOutput {
+                content: if notes.is_empty() {
+                    "No notes saved yet".to_string()
+                } else {
+                    notes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, note)| format!("{}. {}: {}", index + 1, note.title, note.content))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                },
+            }),
+            "add" => {
+                let title = args
+                    .title
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| AppError::Tool("notes.add requires title".to_string()))?;
+                let content = args
+                    .content
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| AppError::Tool("notes.add requires content".to_string()))?;
+
+                if let Some(existing) = notes.iter_mut().find(|note| note.title == title) {
+                    existing.content = content.clone();
+                } else {
+                    notes.push(StoredNote {
+                        title: title.clone(),
+                        content: content.clone(),
+                    });
+                }
+
+                save_json(&path, &notes)?;
+                Ok(ToolOutput {
+                    content: format!("Saved note '{}'", title),
+                })
+            }
+            other => Err(AppError::Tool(format!("unsupported notes action: {other}"))),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TodoTool {
+    workspace_root: PathBuf,
+}
+
+impl TodoTool {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TodoArgs {
+    action: String,
+    text: Option<String>,
+    index: Option<usize>,
+}
+
+#[async_trait]
+impl Tool for TodoTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "todos".to_string(),
+            description: "Manage a simple personal todo list stored in Jellyfish local state".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "list, add, or done"},
+                    "text": {"type": "string"},
+                    "index": {"type": "integer"}
+                },
+                "required": ["action"]
+            }),
+        }
+    }
+
+    async fn call(&self, input: Value) -> AppResult<ToolOutput> {
+        let args: TodoArgs = serde_json::from_value(input)?;
+        let path = jellyfish_data_path(&self.workspace_root, TODOS_FILE);
+        let mut todos = load_json_or_default::<Vec<StoredTodo>>(&path)?;
+
+        match args.action.as_str() {
+            "list" => Ok(ToolOutput {
+                content: if todos.is_empty() {
+                    "No todos saved yet".to_string()
+                } else {
+                    todos
+                        .iter()
+                        .enumerate()
+                        .map(|(index, todo)| {
+                            let state = if todo.done { "done" } else { "open" };
+                            format!("{}. [{}] {}", index + 1, state, todo.text)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                },
+            }),
+            "add" => {
+                let text = args
+                    .text
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| AppError::Tool("todos.add requires text".to_string()))?;
+                todos.push(StoredTodo {
+                    text: text.clone(),
+                    done: false,
+                });
+                save_json(&path, &todos)?;
+                Ok(ToolOutput {
+                    content: format!("Added todo '{}'", text),
+                })
+            }
+            "done" => {
+                let index = args
+                    .index
+                    .ok_or_else(|| AppError::Tool("todos.done requires index".to_string()))?;
+                let todo = todos
+                    .get_mut(index.saturating_sub(1))
+                    .ok_or_else(|| AppError::Tool(format!("todo index out of range: {index}")))?;
+                todo.done = true;
+                let text = todo.text.clone();
+                save_json(&path, &todos)?;
+                Ok(ToolOutput {
+                    content: format!("Completed todo '{}'", text),
+                })
+            }
+            other => Err(AppError::Tool(format!("unsupported todos action: {other}"))),
+        }
+    }
+}
+
+fn load_json_or_default<T>(path: &Path) -> AppResult<T>
+where
+    T: Default + for<'de> Deserialize<'de>,
+{
+    if !path.exists() {
+        return Ok(T::default());
+    }
+
+    let content = fs::read_to_string(path)?;
+    if content.trim().is_empty() {
+        return Ok(T::default());
+    }
+
+    Ok(serde_json::from_str(&content)?)
+}
+
+fn save_json<T>(path: &Path, value: &T) -> AppResult<()>
+where
+    T: serde::Serialize,
+{
+    ensure_data_parent(path)?;
+    fs::write(path, serde_json::to_string_pretty(value)?)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -567,6 +792,47 @@ mod tests {
 
         let created = fs::read_to_string(workspace.join("src/new.rs")).unwrap();
         assert_eq!(created, "pub fn created() {}\n");
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn notes_tool_saves_and_lists_notes() {
+        let workspace = temp_workspace();
+        let tool = NoteTool::new(workspace.clone());
+
+        tool.call(json!({
+            "action": "add",
+            "title": "morning",
+            "content": "prepare summary"
+        }))
+        .await
+        .unwrap();
+
+        let output = tool.call(json!({ "action": "list" })).await.unwrap();
+        assert!(output.content.contains("morning"));
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn todos_tool_tracks_completion() {
+        let workspace = temp_workspace();
+        let tool = TodoTool::new(workspace.clone());
+
+        tool.call(json!({
+            "action": "add",
+            "text": "review priorities"
+        }))
+        .await
+        .unwrap();
+        tool.call(json!({
+            "action": "done",
+            "index": 1
+        }))
+        .await
+        .unwrap();
+
+        let output = tool.call(json!({ "action": "list" })).await.unwrap();
+        assert!(output.content.contains("[done]"));
         fs::remove_dir_all(workspace).unwrap();
     }
 }

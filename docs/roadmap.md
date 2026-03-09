@@ -101,6 +101,10 @@ Recommended order:
 - assistant can use at least one basic tool when needed
 - responses are visible in the terminal and mapped into event records
 
+### Status
+
+Completed.
+
 ## Phase 2 - Stable Execution Layer
 
 ### Goal
@@ -133,6 +137,19 @@ Make the single-agent workflow robust enough for recurring personal assistant ta
 - tool failures are recoverable and visible
 - long-running or noisy tool outputs are controlled
 - runtime behavior is observable through logs and events
+
+### Status
+
+Completed.
+
+### Delivered In This Phase
+
+- persistent local session storage
+- memory deduplication and relevance-based recall
+- tool timeout and output truncation controls
+- explicit tool lifecycle events
+- assistant-first `notes` and `todos` tools
+- REPL mode and session inspection commands
 
 ## Phase 3 - Interaction Experience Enhancements
 

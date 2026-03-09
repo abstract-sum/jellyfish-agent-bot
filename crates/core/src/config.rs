@@ -12,6 +12,8 @@ pub struct AppConfig {
     pub workspace_root: PathBuf,
     pub log_filter: String,
     pub enable_repo_tools: bool,
+    pub tool_timeout_secs: u64,
+    pub tool_output_max_chars: usize,
 }
 
 impl Default for AppConfig {
@@ -22,6 +24,8 @@ impl Default for AppConfig {
             workspace_root: PathBuf::from("."),
             log_filter: "info".to_string(),
             enable_repo_tools: false,
+            tool_timeout_secs: 10,
+            tool_output_max_chars: 4_000,
         }
     }
 }
@@ -48,6 +52,14 @@ impl AppConfig {
                 )
             })
             .unwrap_or(default.enable_repo_tools);
+        let tool_timeout_secs = env::var("RIG_TOOL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(default.tool_timeout_secs);
+        let tool_output_max_chars = env::var("RIG_TOOL_OUTPUT_MAX_CHARS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(default.tool_output_max_chars);
         let workspace_root = env::var("RIG_WORKSPACE_ROOT")
             .map(PathBuf::from)
             .unwrap_or(default.workspace_root);
@@ -72,6 +84,8 @@ impl AppConfig {
             workspace_root,
             log_filter,
             enable_repo_tools,
+            tool_timeout_secs,
+            tool_output_max_chars,
         })
     }
 }
@@ -87,5 +101,7 @@ mod tests {
         assert_eq!(config.model, "gpt-4o-mini");
         assert_eq!(config.workspace_root, PathBuf::from("."));
         assert!(!config.enable_repo_tools);
+        assert_eq!(config.tool_timeout_secs, 10);
+        assert_eq!(config.tool_output_max_chars, 4_000);
     }
 }

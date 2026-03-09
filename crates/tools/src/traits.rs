@@ -16,6 +16,21 @@ pub struct ToolOutput {
     pub content: String,
 }
 
+impl ToolOutput {
+    pub fn truncated(mut self, max_chars: usize) -> Self {
+        if self.content.chars().count() <= max_chars {
+            return self;
+        }
+
+        let truncated = self.content.chars().take(max_chars).collect::<String>();
+        self.content = format!(
+            "{}\n[truncated to {} chars]",
+            truncated, max_chars
+        );
+        self
+    }
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;

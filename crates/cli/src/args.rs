@@ -17,5 +17,16 @@ pub enum Commands {
         #[arg(default_value = "hello")]
         input: String,
     },
+    Repl,
+    Session {
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionCommands {
+    Show,
+    Reset,
 }

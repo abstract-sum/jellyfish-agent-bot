@@ -6,28 +6,46 @@ pub fn apply_memory_updates(session: &mut Session, input: &str) -> Vec<String> {
 
     if let Some(value) = capture_after_prefixes(
         trimmed,
-        &["记住：", "记住:", "记住 ", "remember: ", "remember "],
+        &[
+            "记住：",
+            "记住:",
+            "记住 ",
+            "remember: ",
+            "remember ",
+            "please remember ",
+        ],
     ) {
-        session.remember(MemoryKind::Note, value.to_string());
+        session.remember_unique(MemoryKind::Note, value.to_string());
         updates.push(format!("remembered note: {value}"));
     }
 
     if let Some(value) = capture_after_prefixes(trimmed, &["我叫", "my name is "]) {
         session.set_display_name(value.to_string());
-        session.remember(MemoryKind::Profile, format!("display_name={value}"));
+        session.remember_unique(MemoryKind::Profile, format!("display_name={value}"));
         updates.push(format!("updated display name: {value}"));
     }
 
     if let Some(value) = capture_after_prefixes(trimmed, &["我的时区是", "my timezone is "]) {
         session.set_timezone(value.to_string());
-        session.remember(MemoryKind::Profile, format!("timezone={value}"));
+        session.remember_unique(MemoryKind::Profile, format!("timezone={value}"));
         updates.push(format!("updated timezone: {value}"));
+    }
+
+    if let Some(value) = capture_after_prefixes(trimmed, &["我的语言是", "my language is "]) {
+        session.set_locale(value.to_string());
+        session.remember_unique(MemoryKind::Profile, format!("locale={value}"));
+        updates.push(format!("updated locale: {value}"));
     }
 
     if let Some((key, value)) = capture_preference(trimmed) {
         session.set_preference(key.to_string(), value.to_string());
-        session.remember(MemoryKind::Preference, format!("{key}={value}"));
+        session.remember_unique(MemoryKind::Preference, format!("{key}={value}"));
         updates.push(format!("updated preference: {key}={value}"));
+    }
+
+    if let Some(value) = capture_after_prefixes(trimmed, &["我的任务是", "task: ", "todo: "]) {
+        session.remember_unique(MemoryKind::Task, value.to_string());
+        updates.push(format!("captured task: {value}"));
     }
 
     updates
@@ -92,5 +110,16 @@ mod tests {
 
         assert_eq!(session.profile.display_name.as_deref(), Some("Yvonne"));
         assert_eq!(session.profile.preferences.len(), 1);
+    }
+
+    #[test]
+    fn updates_locale_and_task_without_duplicates() {
+        let mut session = Session::new();
+        apply_memory_updates(&mut session, "我的语言是 zh-CN");
+        apply_memory_updates(&mut session, "记住：明天整理出差清单");
+        apply_memory_updates(&mut session, "记住：明天整理出差清单");
+
+        assert_eq!(session.profile.locale.as_deref(), Some("zh-CN"));
+        assert_eq!(session.memories.len(), 2);
     }
 }

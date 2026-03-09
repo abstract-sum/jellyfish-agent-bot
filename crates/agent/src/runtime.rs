@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::time::{Duration, timeout};
 use tracing::info;
 
 use rig::{
@@ -11,7 +12,7 @@ use rig::{
 };
 
 use jellyfish_core::{AgentEvent, AppConfig, AppError, AppResult, EventKind, Session};
-use jellyfish_tools::{ApplyPatchTool, GlobTool, GrepTool, ReadTool, ToolRegistry};
+use jellyfish_tools::{ApplyPatchTool, GlobTool, GrepTool, NoteTool, ReadTool, TodoTool, ToolRegistry};
 
 use crate::{prompt::PromptTemplate, traits::AgentRuntime};
 
@@ -56,6 +57,8 @@ pub struct RigAgentRuntime {
 impl RigAgentRuntime {
     pub fn new(config: AppConfig) -> Self {
         let mut tools = ToolRegistry::new();
+        tools.register(NoteTool::new(config.workspace_root.clone()));
+        tools.register(TodoTool::new(config.workspace_root.clone()));
         if config.enable_repo_tools {
             tools.register(ReadTool::new(config.workspace_root.clone()));
             tools.register(GlobTool::new(config.workspace_root.clone()));
@@ -128,7 +131,7 @@ impl RigAgentRuntime {
                 .join(", ")
         };
         let memories = {
-            let items = session.memory_summary(5);
+            let items = session.relevant_memories("recent user context preferences todos notes", 5);
             if items.is_empty() {
                 "none".to_string()
             } else {
@@ -136,9 +139,30 @@ impl RigAgentRuntime {
             }
         };
 
+        let recent_messages = session
+            .messages
+            .iter()
+            .rev()
+            .take(4)
+            .rev()
+            .map(|message| format!("{:?}: {}", message.role, message.content))
+            .collect::<Vec<_>>()
+            .join(" | ");
+
         format!(
-            "User profile: display_name={display_name}, locale={locale}, timezone={timezone}. Preferences: {preferences}. Recent memories: {memories}."
+            "User profile: display_name={display_name}, locale={locale}, timezone={timezone}. Preferences: {preferences}. Relevant memories: {memories}. Recent conversation: {recent_messages}."
         )
+    }
+
+    async fn call_tool(&self, tool_name: &str, input: Value) -> AppResult<jellyfish_tools::ToolOutput> {
+        let output = timeout(
+            Duration::from_secs(self.config.tool_timeout_secs),
+            self.tools.call(tool_name, input),
+        )
+        .await
+        .map_err(|_| AppError::Tool(format!("tool timed out: {tool_name}")))??;
+
+        Ok(output.truncated(self.config.tool_output_max_chars))
     }
 
     fn build_step_prompt(&self, user_input: &str, transcript: &[String], session: Option<&Session>) -> String {
@@ -243,15 +267,38 @@ impl AgentRuntime for RigAgentRuntime {
                     }
 
                     events.push(AgentEvent {
-                        kind: EventKind::ToolCall,
+                        kind: EventKind::ToolRequested,
                         message: format!("{} {}", tool_name, input),
                     });
-
-                    let output = self.tools.call(&tool_name, input.clone()).await?;
                     events.push(AgentEvent {
-                        kind: EventKind::ToolResult,
-                        message: format!("{} -> {}", tool_name, output.content),
+                        kind: EventKind::ToolStarted,
+                        message: tool_name.clone(),
                     });
+
+                    let output = match self.call_tool(&tool_name, input.clone()).await {
+                        Ok(output) => {
+                            events.push(AgentEvent {
+                                kind: EventKind::ToolCompleted,
+                                message: format!("{} -> {}", tool_name, output.content),
+                            });
+                            output
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            events.push(AgentEvent {
+                                kind: EventKind::ToolFailed,
+                                message: format!("{} -> {}", tool_name, message),
+                            });
+                            transcript.push(format!(
+                                "Tool call on turn {} failed:\nname={}\ninput={}\nerror={}",
+                                turn + 1,
+                                tool_name,
+                                input,
+                                message
+                            ));
+                            continue;
+                        }
+                    };
 
                     transcript.push(format!(
                         "Tool call on turn {}:\nname={}\ninput={}\nresult={}",
@@ -291,6 +338,8 @@ pub struct MockAgentRuntime {
 impl MockAgentRuntime {
     pub fn new(config: AppConfig) -> Self {
         let mut tools = ToolRegistry::new();
+        tools.register(NoteTool::new(config.workspace_root.clone()));
+        tools.register(TodoTool::new(config.workspace_root.clone()));
         if config.enable_repo_tools {
             tools.register(ReadTool::new(config.workspace_root.clone()));
             tools.register(GlobTool::new(config.workspace_root.clone()));

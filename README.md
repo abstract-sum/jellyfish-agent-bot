@@ -10,14 +10,17 @@ The current implementation focus is:
 
 ## Current Status
 
-Phase 0 is complete.
+Phase 0 and Phase 1 are complete. Phase 2 is now complete as the stable execution baseline for Jellyfish.
 
 Implemented so far:
 
 - Rust workspace scaffold
 - `core`, `agent`, `tools`, and `cli` crate boundaries
-- compileable CLI skeleton
 - shared configuration, error, session, and event types
+- persistent local session storage in `./.jellyfish/session.json`
+- personal-assistant memory/profile model with relevance-based recall
+- assistant-first `notes` and `todos` tools
+- REPL mode for ongoing local conversations
 
 ## Repository Layout
 

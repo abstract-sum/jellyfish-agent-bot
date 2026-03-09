@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 pub enum EventKind {
     UserMessage,
     AgentMessage,
-    ToolCall,
-    ToolResult,
+    ToolRequested,
+    ToolStarted,
+    ToolCompleted,
+    ToolFailed,
     System,
 }
 
