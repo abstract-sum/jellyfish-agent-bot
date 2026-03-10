@@ -1,6 +1,7 @@
 mod args;
 mod memory;
 mod output;
+mod retrieval;
 mod session_store;
 
 use anyhow::Result;
@@ -12,6 +13,21 @@ use std::io::{self, Write};
 use tracing_subscriber::EnvFilter;
 
 use crate::args::{Cli, Commands, SessionCommands};
+use crate::retrieval::RetrievalSnapshot;
+
+fn codex_auth_cache_exists() -> bool {
+    jellyfish_agent::codex_cli::codex_auth_cache_exists()
+}
+
+fn codex_cli_available() -> bool {
+    jellyfish_agent::codex_cli::codex_cli_available()
+}
+
+fn codex_native_ready() -> bool {
+    jellyfish_agent::codex_auth::load_codex_credentials()
+        .map(|credentials| credentials.is_some())
+        .unwrap_or(false)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,13 +38,15 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let runtime = build_runtime(config.clone())?;
-
     match cli.command {
-        Commands::Chat { input } => {
-            run_chat_turn(&*runtime, &config, &input).await?;
+        Commands::Chat { input, yes } => {
+            let runtime_config = config.with_file_edits_allowed(yes);
+            let runtime = build_runtime(runtime_config.clone())?;
+            run_chat_turn(&*runtime, &runtime_config, &input).await?;
         }
-        Commands::Repl => {
+        Commands::Repl { yes } => {
+            let runtime_config = config.with_file_edits_allowed(yes);
+            let runtime = build_runtime(runtime_config.clone())?;
             println!("Jellyfish REPL started. Type 'exit' or 'quit' to leave.");
             loop {
                 print!("jellyfish> ");
@@ -48,7 +66,7 @@ async fn main() -> Result<()> {
                     break;
                 }
 
-                run_chat_turn(&*runtime, &config, input).await?;
+                run_chat_turn(&*runtime, &runtime_config, input).await?;
             }
         }
         Commands::Session { command } => match command {
@@ -76,30 +94,79 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Recall { query } => {
+            let session = session_store::load_or_create(&config.workspace_root)?;
+            let snapshot = RetrievalSnapshot::load(&config.workspace_root, &session)?;
+            let hits = snapshot.search(&query, 10);
+
+            if hits.is_empty() {
+                println!("No retrieval matches found for '{}'", query);
+            } else {
+                println!("Retrieval matches for '{}':", query);
+                for hit in hits {
+                    println!("- [{}] {} (score {})", hit.source, hit.content, hit.score);
+                }
+            }
+        }
         Commands::Doctor => {
+            let runtime = build_runtime(config.clone())?;
             let runtime_status = "ready".to_string();
             let credential_status = match config.provider {
                 ProviderKind::OpenAi => match env::var("OPENAI_API_KEY") {
                     Ok(value) if !value.trim().is_empty() => "OPENAI_API_KEY detected".to_string(),
                     _ => "OPENAI_API_KEY missing".to_string(),
                 },
+                ProviderKind::Codex => {
+                    if codex_native_ready() {
+                        "codex OAuth credentials detected".to_string()
+                    } else {
+                        "codex OAuth credentials missing or invalid".to_string()
+                    }
+                }
+                ProviderKind::CodexCli => {
+                    if codex_auth_cache_exists() {
+                        "codex auth cache detected".to_string()
+                    } else {
+                        "codex auth cache missing".to_string()
+                    }
+                }
                 ProviderKind::Mock => "no external credentials required".to_string(),
                 ProviderKind::Anthropic => "anthropic provider is not wired yet".to_string(),
             };
 
-            println!("Jellyfish Phase 2 scaffold is healthy.");
+            let session = session_store::load_or_create(&config.workspace_root)?;
+            let snapshot = RetrievalSnapshot::load(&config.workspace_root, &session)?;
+
+            println!("Jellyfish Phase 4 scaffold is healthy.");
             println!("Provider: {}", config.provider.as_str());
             println!("Model: {}", config.model);
             println!("Workspace root: {}", config.workspace_root.display());
             println!("Runtime: {}", runtime_status);
             println!("Credentials: {}", credential_status);
             println!("Repo tools enabled: {}", config.enable_repo_tools);
+            println!("File edits allowed: {}", config.allow_file_edits);
             println!("Tool timeout (secs): {}", config.tool_timeout_secs);
             println!("Tool output max chars: {}", config.tool_output_max_chars);
+            println!("Retrieval entries: {}", snapshot.len());
             println!(
                 "Session file: {}",
                 session_store::session_file_path(&config.workspace_root).display()
             );
+            if matches!(config.provider, ProviderKind::Codex) {
+                println!("Codex auth cache detected: {}", codex_auth_cache_exists());
+                println!("Codex native credentials ready: {}", codex_native_ready());
+                println!(
+                    "Codex auth mode: Jellyfish reads OAuth credentials from ~/.codex/auth.json and calls chatgpt.com/backend-api/codex/responses"
+                );
+            }
+            if matches!(config.provider, ProviderKind::CodexCli) {
+                println!("Codex CLI detected: {}", codex_cli_available());
+                println!("Codex auth cache detected: {}", codex_auth_cache_exists());
+                println!(
+                    "Codex auth mode: Jellyfish shells out to codex CLI and relies on the CLI's own login state"
+                );
+            }
+            drop(runtime);
         }
     }
 
@@ -121,11 +188,14 @@ async fn run_chat_turn(
 
     session.push_message(MessageRole::User, input.to_string());
     let memory_updates = memory::apply_memory_updates(&mut session, input);
+    let snapshot = RetrievalSnapshot::load(&config.workspace_root, &session)?;
+    let retrieval_context = snapshot.context_lines(input, 8);
 
     let response = runtime
         .run(AgentRequest {
             input: input.to_string(),
             session: Some(session.clone()),
+            retrieval_context,
         })
         .await?;
 
@@ -135,12 +205,6 @@ async fn run_chat_turn(
     }
     let session_path = session_store::save(&config.workspace_root, &session)?;
 
-    output::print_agent_response(&response);
-    if !memory_updates.is_empty() {
-        for update in memory_updates {
-            println!("- [Memory] {}", update);
-        }
-    }
-    println!("- [Session] Saved to {}", session_path.display());
+    output::print_agent_response(&response, &memory_updates, &session_path);
     Ok(())
 }

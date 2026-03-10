@@ -175,6 +175,17 @@ Improve usability without introducing Plan Mode / Execute Mode.
 
 Do not split the product into separate planning and execution modes in this phase.
 
+### Status
+
+Completed.
+
+### Delivered In This Phase
+
+- clearer progress feedback in CLI output
+- per-turn result summaries
+- confirmation gate for dangerous file-edit operations
+- safer opt-in file editing through `--yes` or `RIG_ALLOW_FILE_EDITS`
+
 ## Phase 4 - Retrieval And Memory
 
 ### Goal
@@ -195,6 +206,27 @@ Suggested progression:
 - start with simple local memory
 - evaluate `rig-sqlite` or a lightweight vector backend
 - keep retrieval optional at runtime
+
+### Status
+
+Completed.
+
+### Delivered In This Phase
+
+- local retrieval snapshot across profile, memories, notes, todos, and recent conversation
+- retrieval context injection into runtime prompts
+- `recall` CLI command for inspecting relevant stored context
+- retrieval-aware doctor output and runtime progress feedback
+
+## Current Runtime Profile
+
+The repository is currently adapted for native Codex by default:
+
+- `RIG_PROVIDER=codex`
+- `RIG_MODEL=gpt-5.4`
+- Jellyfish calls `https://chatgpt.com/backend-api/codex/responses`
+- OAuth credentials are read from `~/.codex/auth.json`
+- `codex-cli` remains available as a fallback provider for shell-out execution
 
 ## Phase 5 - Multi-Agent Orchestration
 

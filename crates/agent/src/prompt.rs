@@ -12,6 +12,7 @@ impl PromptTemplate {
                 "Use tools only when they improve the answer or help verify details.",
                 "Respect remembered user context such as preferences, profile details, and recent notes.",
                 "Keep answers concise, useful, and grounded in available context.",
+                "Stay compatible with Codex-style models by returning plain text unless JSON is explicitly requested.",
                 "When asked to choose the next step, respond with valid JSON only.",
             ]
             .join(" "),

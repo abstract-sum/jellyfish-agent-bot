@@ -16,11 +16,19 @@ pub enum Commands {
     Chat {
         #[arg(default_value = "hello")]
         input: String,
+        #[arg(long, help = "Allow dangerous file-edit tools for this run")]
+        yes: bool,
     },
-    Repl,
+    Repl {
+        #[arg(long, help = "Allow dangerous file-edit tools for this run")]
+        yes: bool,
+    },
     Session {
         #[command(subcommand)]
         command: SessionCommands,
+    },
+    Recall {
+        query: String,
     },
     Doctor,
 }

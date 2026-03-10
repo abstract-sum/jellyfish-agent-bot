@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub workspace_root: PathBuf,
     pub log_filter: String,
     pub enable_repo_tools: bool,
+    pub allow_file_edits: bool,
     pub tool_timeout_secs: u64,
     pub tool_output_max_chars: usize,
 }
@@ -19,11 +20,12 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            provider: ProviderKind::OpenAi,
-            model: "gpt-4o-mini".to_string(),
+            provider: ProviderKind::Codex,
+            model: "gpt-5.4".to_string(),
             workspace_root: PathBuf::from("."),
             log_filter: "info".to_string(),
             enable_repo_tools: false,
+            allow_file_edits: false,
             tool_timeout_secs: 10,
             tool_output_max_chars: 4_000,
         }
@@ -52,6 +54,15 @@ impl AppConfig {
                 )
             })
             .unwrap_or(default.enable_repo_tools);
+        let allow_file_edits = env::var("RIG_ALLOW_FILE_EDITS")
+            .ok()
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(default.allow_file_edits);
         let tool_timeout_secs = env::var("RIG_TOOL_TIMEOUT_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -84,9 +95,17 @@ impl AppConfig {
             workspace_root,
             log_filter,
             enable_repo_tools,
+            allow_file_edits,
             tool_timeout_secs,
             tool_output_max_chars,
         })
+    }
+
+    pub fn with_file_edits_allowed(mut self, allow: bool) -> Self {
+        if allow {
+            self.allow_file_edits = true;
+        }
+        self
     }
 }
 
@@ -97,10 +116,11 @@ mod tests {
     #[test]
     fn default_config_uses_relative_workspace() {
         let config = AppConfig::default();
-        assert_eq!(config.provider, ProviderKind::OpenAi);
-        assert_eq!(config.model, "gpt-4o-mini");
+        assert_eq!(config.provider, ProviderKind::Codex);
+        assert_eq!(config.model, "gpt-5.4");
         assert_eq!(config.workspace_root, PathBuf::from("."));
         assert!(!config.enable_repo_tools);
+        assert!(!config.allow_file_edits);
         assert_eq!(config.tool_timeout_secs, 10);
         assert_eq!(config.tool_output_max_chars, 4_000);
     }

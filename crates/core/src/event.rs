@@ -8,6 +8,7 @@ pub enum EventKind {
     ToolStarted,
     ToolCompleted,
     ToolFailed,
+    ConfirmationRequired,
     System,
 }
 

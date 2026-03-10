@@ -7,8 +7,10 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+futures-util.workspace = true
 jellyfish-core = { path = "../core" }
 jellyfish-tools = { path = "../tools" }
+reqwest.workspace = true
 rig.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -108,16 +108,37 @@ impl Session {
 
     pub fn relevant_memories(&self, query: &str, limit: usize) -> Vec<String> {
         let query_tokens = tokenize(query);
+        let compact_query = compact(query);
+        let query_bigrams = bigrams(&compact_query);
         let mut ranked = self
             .memories
             .iter()
             .map(|entry| {
-                let overlap = tokenize(&entry.content)
+                let token_overlap = tokenize(&entry.content)
                     .into_iter()
                     .filter(|token| query_tokens.contains(token))
                     .count();
+                let compact_content = compact(&entry.content);
+                let substring_overlap =
+                    if !compact_query.is_empty() && compact_content.contains(&compact_query) {
+                        2
+                    } else {
+                        0
+                    };
+                let bigram_overlap = if query_bigrams.is_empty() {
+                    0
+                } else {
+                    bigrams(&compact_content)
+                        .into_iter()
+                        .filter(|gram| query_bigrams.contains(gram))
+                        .count()
+                };
                 let recency = entry.updated_at;
-                (entry, overlap, recency)
+                (
+                    entry,
+                    token_overlap + substring_overlap + bigram_overlap,
+                    recency,
+                )
             })
             .filter(|(_, overlap, _)| *overlap > 0)
             .collect::<Vec<_>>();
@@ -150,6 +171,22 @@ fn tokenize(value: &str) -> Vec<String> {
         .split(|char: char| !char.is_alphanumeric() && char != '_' && char != '-')
         .filter(|token| !token.is_empty())
         .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn compact(value: &str) -> String {
+    value.chars().filter(|char| !char.is_whitespace()).collect()
+}
+
+fn bigrams(value: &str) -> Vec<String> {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() < 2 {
+        return Vec::new();
+    }
+
+    chars
+        .windows(2)
+        .map(|window| window.iter().collect::<String>())
         .collect()
 }
 
