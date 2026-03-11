@@ -1,19 +1,24 @@
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 
 use jellyfish_core::{AppError, AppResult};
 
 const OPENAI_AUTH_CLAIM: &str = "https://api.openai.com/auth";
+const OPENAI_CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexCredentials {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub account_id: String,
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,6 +26,8 @@ struct CodexAuthFile {
     #[serde(rename = "OPENAI_API_KEY")]
     openai_api_key: Option<String>,
     tokens: Option<CodexTokens>,
+    #[allow(dead_code)]
+    last_refresh: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,6 +35,14 @@ struct CodexTokens {
     access_token: Option<String>,
     refresh_token: Option<String>,
     account_id: Option<String>,
+    expires_at: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RefreshResponse {
+    access_token: String,
+    refresh_token: String,
+    expires_in: u64,
 }
 
 pub fn load_bearer_token() -> AppResult<Option<String>> {
@@ -54,10 +69,12 @@ pub fn load_codex_credentials() -> AppResult<Option<CodexCredentials>> {
         .openai_api_key
         .filter(|value| !value.trim().is_empty())
     {
+        let expires_at = extract_expiry(&api_key).ok();
         return Ok(Some(CodexCredentials {
             access_token: api_key,
             refresh_token: None,
             account_id: String::new(),
+            expires_at,
         }));
     }
 
@@ -75,6 +92,7 @@ pub fn load_codex_credentials() -> AppResult<Option<CodexCredentials>> {
         .ok_or_else(|| {
             AppError::Config("failed to extract Codex account_id from auth cache".to_string())
         })?;
+    let expires_at = tokens.expires_at.or_else(|| extract_expiry(&access_token).ok());
 
     Ok(Some(CodexCredentials {
         access_token,
@@ -82,7 +100,62 @@ pub fn load_codex_credentials() -> AppResult<Option<CodexCredentials>> {
             .refresh_token
             .filter(|value| !value.trim().is_empty()),
         account_id,
+        expires_at,
     }))
+}
+
+pub fn should_refresh(credentials: &CodexCredentials) -> bool {
+    let Some(expires_at) = credentials.expires_at else {
+        return false;
+    };
+    expires_at <= unix_timestamp() + 60
+}
+
+pub async fn refresh_codex_credentials(
+    credentials: &CodexCredentials,
+) -> AppResult<CodexCredentials> {
+    let refresh_token = credentials
+        .refresh_token
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AppError::Config("codex credentials do not contain a refresh token".to_string()))?;
+
+    let client = Client::new();
+    let response = client
+        .post(OPENAI_TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", OPENAI_CODEX_CLIENT_ID),
+        ])
+        .send()
+        .await
+        .map_err(|error| AppError::Runtime(format!("failed to refresh Codex token: {error}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::Runtime(format!(
+            "failed to refresh Codex token with {}: {}",
+            status, body
+        )));
+    }
+
+    let refreshed: RefreshResponse = response
+        .json()
+        .await
+        .map_err(|error| AppError::Runtime(format!("failed to parse Codex refresh response: {error}")))?;
+    let account_id = extract_account_id(&refreshed.access_token)?;
+
+    let refreshed_credentials = CodexCredentials {
+        access_token: refreshed.access_token,
+        refresh_token: Some(refreshed.refresh_token),
+        account_id,
+        expires_at: Some(unix_timestamp() + refreshed.expires_in),
+    };
+    persist_refreshed_credentials(&refreshed_credentials)?;
+    Ok(refreshed_credentials)
 }
 
 pub fn extract_account_id(token: &str) -> AppResult<String> {
@@ -105,6 +178,13 @@ fn decode_jwt_payload(token: &str) -> AppResult<Value> {
     let normalized = format!("{}{}", payload, "=".repeat((4 - payload.len() % 4) % 4));
     let decoded = decode_base64_urlsafe(&normalized)?;
     serde_json::from_slice(&decoded).map_err(AppError::from)
+}
+
+fn extract_expiry(token: &str) -> AppResult<u64> {
+    decode_jwt_payload(token)?
+        .get("exp")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| AppError::Config("failed to extract token expiry".to_string()))
 }
 
 fn decode_base64_urlsafe(input: &str) -> AppResult<Vec<u8>> {
@@ -145,6 +225,60 @@ pub fn auth_file_path() -> AppResult<PathBuf> {
     Ok(PathBuf::from(home).join(".codex").join("auth.json"))
 }
 
+fn persist_refreshed_credentials(credentials: &CodexCredentials) -> AppResult<()> {
+    let path = auth_file_path()?;
+    let mut value = if path.exists() {
+        serde_json::from_str::<Value>(&fs::read_to_string(&path)?)?
+    } else {
+        Value::Object(Default::default())
+    };
+
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| AppError::Config("invalid codex auth cache structure".to_string()))?;
+    let tokens = object
+        .entry("tokens")
+        .or_insert_with(|| Value::Object(Default::default()));
+    let tokens_object = tokens
+        .as_object_mut()
+        .ok_or_else(|| AppError::Config("invalid codex tokens structure".to_string()))?;
+
+    tokens_object.insert(
+        "access_token".to_string(),
+        Value::String(credentials.access_token.clone()),
+    );
+    if let Some(refresh_token) = &credentials.refresh_token {
+        tokens_object.insert(
+            "refresh_token".to_string(),
+            Value::String(refresh_token.clone()),
+        );
+    }
+    tokens_object.insert(
+        "account_id".to_string(),
+        Value::String(credentials.account_id.clone()),
+    );
+    if let Some(expires_at) = credentials.expires_at {
+        tokens_object.insert(
+            "expires_at".to_string(),
+            Value::Number(serde_json::Number::from(expires_at)),
+        );
+    }
+    object.insert(
+        "last_refresh".to_string(),
+        Value::Number(serde_json::Number::from(unix_timestamp())),
+    );
+
+    fs::write(path, serde_json::to_string_pretty(&value)?)?;
+    Ok(())
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +294,17 @@ mod tests {
     fn decodes_base64_urlsafe_payload() {
         let payload = decode_base64_urlsafe("eyJmb28iOiJiYXIifQ==").unwrap();
         assert_eq!(String::from_utf8(payload).unwrap(), r#"{"foo":"bar"}"#);
+    }
+
+    #[test]
+    fn extracts_account_id_from_access_token_claim() {
+        let token = concat!(
+            "eyJhbGciOiJub25lIn0.",
+            "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdF8xMjMifX0.",
+            "signature"
+        );
+
+        let account_id = extract_account_id(token).unwrap();
+        assert_eq!(account_id, "acct_123");
     }
 }

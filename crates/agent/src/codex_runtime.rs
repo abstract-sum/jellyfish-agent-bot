@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use jellyfish_core::{AppError, AppResult};
 
-use crate::codex_auth::CodexCredentials;
+use crate::codex_auth::{CodexCredentials, refresh_codex_credentials, should_refresh};
 
 const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
 
@@ -15,6 +15,12 @@ pub async fn run_codex_request(
     user_input: &str,
     retrieval_context: &[String],
 ) -> AppResult<String> {
+    let credentials = if should_refresh(credentials) {
+        refresh_codex_credentials(credentials).await?
+    } else {
+        credentials.clone()
+    };
+
     let client = reqwest::Client::builder()
         .build()
         .map_err(|error| AppError::Runtime(format!("failed to build Codex HTTP client: {error}")))?;
@@ -43,25 +49,41 @@ pub async fn run_codex_request(
         ]
     });
 
-    let response = client
+    let response = send_request(&client, &credentials, &body).await?;
+
+    match response.status() {
+        status if status.is_success() => parse_sse_response(response).await,
+        reqwest::StatusCode::UNAUTHORIZED => {
+            let refreshed = refresh_codex_credentials(&credentials).await?;
+            let retry_response = send_request(&client, &refreshed, &body).await?;
+            if !retry_response.status().is_success() {
+                return Err(build_http_error(retry_response).await);
+            }
+            parse_sse_response(retry_response).await
+        }
+        _ => Err(build_http_error(response).await),
+    }
+}
+
+async fn send_request(
+    client: &reqwest::Client,
+    credentials: &CodexCredentials,
+    body: &Value,
+) -> AppResult<reqwest::Response> {
+    client
         .post(resolve_codex_url())
         .headers(build_headers(credentials)?)
-        .json(&body)
+        .json(body)
         .send()
         .await
-        .map_err(|error| AppError::Runtime(format!("failed to send Codex request: {error}")))?;
+        .map_err(|error| AppError::Runtime(format!("failed to send Codex request: {error}")))
+}
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let detail = parse_error_message(&body).unwrap_or(body);
-        return Err(AppError::Runtime(format!(
-            "Codex request failed with {}: {}",
-            status, detail
-        )));
-    }
-
-    parse_sse_response(response).await
+async fn build_http_error(response: reqwest::Response) -> AppError {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    let detail = parse_error_message(&body).unwrap_or(body);
+    AppError::Runtime(format!("Codex request failed with {}: {}", status, detail))
 }
 
 fn resolve_codex_url() -> String {
@@ -104,30 +126,9 @@ async fn parse_sse_response(response: reqwest::Response) -> AppResult<String> {
             let frame = buffer[..index].to_string();
             buffer = buffer[index + 2..].to_string();
 
-            for data in frame
-                .lines()
-                .filter_map(|line| line.strip_prefix("data:"))
-                .map(str::trim)
-                .filter(|line| !line.is_empty() && *line != "[DONE]")
-            {
-                let value: Value = serde_json::from_str(data)?;
-                match value.get("type").and_then(Value::as_str).unwrap_or_default() {
-                    "response.output_text.delta" => {
-                        if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                            text.push_str(delta);
-                        }
-                    }
-                    "response.completed" | "response.done" => {
-                        if !text.trim().is_empty() {
-                            return Ok(text.trim().to_string());
-                        }
-                    }
-                    "response.failed" | "error" => {
-                        let detail = parse_error_value(&value)
-                            .unwrap_or_else(|| value.to_string());
-                        return Err(AppError::Runtime(format!("Codex response failed: {detail}")));
-                    }
-                    _ => {}
+            if let Some(done) = parse_sse_frame(&frame, &mut text)? {
+                if done {
+                    return Ok(text.trim().to_string());
                 }
             }
         }
@@ -140,6 +141,36 @@ async fn parse_sse_response(response: reqwest::Response) -> AppResult<String> {
     }
 
     Ok(text.trim().to_string())
+}
+
+fn parse_sse_frame(frame: &str, text: &mut String) -> AppResult<Option<bool>> {
+    for data in frame
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != "[DONE]")
+    {
+        let value: Value = serde_json::from_str(data)?;
+        match value.get("type").and_then(Value::as_str).unwrap_or_default() {
+            "response.output_text.delta" => {
+                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    text.push_str(delta);
+                }
+            }
+            "response.completed" | "response.done" => {
+                if !text.trim().is_empty() {
+                    return Ok(Some(true));
+                }
+            }
+            "response.failed" | "error" => {
+                let detail = parse_error_value(&value).unwrap_or_else(|| value.to_string());
+                return Err(AppError::Runtime(format!("Codex response failed: {detail}")));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(None)
 }
 
 fn parse_error_message(body: &str) -> Option<String> {
@@ -164,5 +195,20 @@ mod tests {
     fn extracts_error_message() {
         let message = parse_error_message(r#"{"error":{"message":"denied"}}"#).unwrap();
         assert_eq!(message, "denied");
+    }
+
+    #[test]
+    fn parses_output_text_deltas_into_final_message() {
+        let mut text = String::new();
+
+        let first = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n"
+        );
+        assert_eq!(parse_sse_frame(first, &mut text).unwrap(), None);
+
+        let done = "data: {\"type\":\"response.completed\"}\n\n";
+        assert_eq!(parse_sse_frame(done, &mut text).unwrap(), Some(true));
+        assert_eq!(text, "Hello world");
     }
 }

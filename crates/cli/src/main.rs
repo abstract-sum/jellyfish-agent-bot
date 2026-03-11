@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
             if matches!(config.provider, ProviderKind::Codex) {
                 println!("Codex auth cache detected: {}", codex_auth_cache_exists());
                 println!("Codex native credentials ready: {}", codex_native_ready());
+                println!("Codex token refresh support: enabled");
                 println!(
                     "Codex auth mode: Jellyfish reads OAuth credentials from ~/.codex/auth.json and calls chatgpt.com/backend-api/codex/responses"
                 );
