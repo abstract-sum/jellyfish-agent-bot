@@ -11,6 +11,36 @@ pub enum ProviderKind {
     Mock,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CodexTransport {
+    Auto,
+    Sse,
+    Websocket,
+}
+
+impl CodexTransport {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Sse => "sse",
+            Self::Websocket => "websocket",
+        }
+    }
+}
+
+impl FromStr for CodexTransport {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "sse" => Ok(Self::Sse),
+            "websocket" | "ws" => Ok(Self::Websocket),
+            other => Err(format!("unsupported Codex transport: {other}")),
+        }
+    }
+}
+
 impl ProviderKind {
     pub fn as_str(&self) -> &'static str {
         match self {

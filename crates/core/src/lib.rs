@@ -10,4 +10,4 @@ pub use error::{AppError, AppResult};
 pub use event::{AgentEvent, EventKind, ToolEvent};
 pub use memory::{MemoryEntry, MemoryKind, UserPreference, UserProfile};
 pub use session::{Message, MessageRole, Session};
-pub use types::{ProviderKind, SessionId};
+pub use types::{CodexTransport, ProviderKind, SessionId};

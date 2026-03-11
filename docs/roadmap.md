@@ -225,8 +225,14 @@ The repository is currently adapted for native Codex by default:
 - `RIG_PROVIDER=codex`
 - `RIG_MODEL=gpt-5.4`
 - Jellyfish calls `https://chatgpt.com/backend-api/codex/responses`
+- native Codex transport supports `auto`, `sse`, and `websocket`
 - OAuth credentials are read from `~/.codex/auth.json`
 - `codex-cli` remains available as a fallback provider for shell-out execution
+
+## Native Codex Follow-Up Todo
+
+- improve native Codex tool-calling stability across multi-turn loops
+- refine failure recovery and provider-specific error messaging for native Codex requests
 
 ## Phase 5 - Multi-Agent Orchestration
 

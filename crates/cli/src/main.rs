@@ -147,6 +147,7 @@ async fn main() -> Result<()> {
             println!("File edits allowed: {}", config.allow_file_edits);
             println!("Tool timeout (secs): {}", config.tool_timeout_secs);
             println!("Tool output max chars: {}", config.tool_output_max_chars);
+            println!("Codex transport: {}", config.codex_transport.as_str());
             println!("Retrieval entries: {}", snapshot.len());
             println!(
                 "Session file: {}",

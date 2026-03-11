@@ -425,14 +425,164 @@ pub struct MockAgentRuntime {
 pub struct NativeCodexRuntime {
     config: AppConfig,
     prompt: PromptTemplate,
+    tools: ToolRegistry,
 }
 
 impl NativeCodexRuntime {
     pub fn new(config: AppConfig) -> Self {
+        let mut tools = ToolRegistry::new();
+        tools.register(NoteTool::new(config.workspace_root.clone()));
+        tools.register(TodoTool::new(config.workspace_root.clone()));
+        if config.enable_repo_tools {
+            tools.register(ReadTool::new(config.workspace_root.clone()));
+            tools.register(GlobTool::new(config.workspace_root.clone()));
+            tools.register(GrepTool::new(config.workspace_root.clone()));
+            tools.register(ApplyPatchTool::new(config.workspace_root.clone()));
+        }
+
         Self {
             config,
             prompt: PromptTemplate::personal_assistant(),
+            tools,
         }
+    }
+
+    fn tool_instructions(&self) -> String {
+        if self.tools.is_empty() {
+            return "- none enabled".to_string();
+        }
+
+        self.tools
+            .definitions()
+            .into_iter()
+            .map(|definition| {
+                format!(
+                    "- {}: {} | schema={} ",
+                    definition.name, definition.description, definition.input_schema
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn memory_context(&self, session: Option<&Session>) -> String {
+        let Some(session) = session else {
+            return "No remembered user context yet.".to_string();
+        };
+
+        let display_name = session.profile.display_name.as_deref().unwrap_or("unknown");
+        let locale = session.profile.locale.as_deref().unwrap_or("unknown");
+        let timezone = session.profile.timezone.as_deref().unwrap_or("unknown");
+        let preferences = if session.profile.preferences.is_empty() {
+            "none".to_string()
+        } else {
+            session
+                .profile
+                .preferences
+                .iter()
+                .map(|entry| format!("{}={}", entry.key, entry.value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let memories = {
+            let items = session.relevant_memories("recent user context preferences todos notes", 5);
+            if items.is_empty() {
+                "none".to_string()
+            } else {
+                items.join(" | ")
+            }
+        };
+        let recent_messages = session
+            .messages
+            .iter()
+            .rev()
+            .take(4)
+            .rev()
+            .map(|message| format!("{:?}: {}", message.role, message.content))
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        format!(
+            "User profile: display_name={display_name}, locale={locale}, timezone={timezone}. Preferences: {preferences}. Relevant memories: {memories}. Recent conversation: {recent_messages}."
+        )
+    }
+
+    async fn call_tool(&self, tool_name: &str, input: Value) -> AppResult<jellyfish_tools::ToolOutput> {
+        let output = timeout(
+            Duration::from_secs(self.config.tool_timeout_secs),
+            self.tools.call(tool_name, input),
+        )
+        .await
+        .map_err(|_| AppError::Tool(format!("tool timed out: {tool_name}")))??;
+
+        Ok(output.truncated(self.config.tool_output_max_chars))
+    }
+
+    fn build_step_prompt(&self, user_input: &str, transcript: &[String], session: Option<&Session>) -> String {
+        let transcript = if transcript.is_empty() {
+            "No tool interactions yet.".to_string()
+        } else {
+            transcript.join("\n\n")
+        };
+        let memory_context = self.memory_context(session);
+        let tool_usage_guidance = if self.tools.is_empty() {
+            "No tools are enabled for this run. Answer directly using conversation context and remembered user context."
+                .to_string()
+        } else {
+            "If you need additional local context, you may return {\"kind\":\"tool\",\"tool_name\":\"...\",\"input\":{...}}."
+                .to_string()
+        };
+
+        format!(
+            concat!(
+                "Decide the next step for this personal assistant request.\n",
+                "Remembered user context:\n{memory_context}\n\n",
+                "Safety policy:\n{file_edit_policy}\n\n",
+                "Available tools:\n{tools}\n\n",
+                "Tool guidance:\n{tool_usage_guidance}\n\n",
+                "Conversation state:\n{transcript}\n\n",
+                "User request:\n{user_input}\n\n",
+                "Return JSON only.\n",
+                "If you can answer, return:\n",
+                "{{\"kind\":\"respond\",\"message\":\"final answer\"}}\n",
+                "Do not include markdown fences or explanatory text outside JSON."
+            ),
+            memory_context = memory_context,
+            file_edit_policy = if self.config.allow_file_edits {
+                "File edits are allowed for this run when necessary."
+            } else {
+                "File edits are disabled unless the user explicitly enables them for this run."
+            },
+            tools = self.tool_instructions(),
+            tool_usage_guidance = tool_usage_guidance,
+            transcript = transcript,
+            user_input = user_input,
+        )
+    }
+
+    fn retrieval_context(&self, items: &[String]) -> String {
+        if items.is_empty() {
+            "No additional retrieval context found.".to_string()
+        } else {
+            items.join(" | ")
+        }
+    }
+
+    async fn prompt_model(
+        &self,
+        credentials: &codex_auth::CodexCredentials,
+        prompt: &str,
+        retrieval_context: &[String],
+    ) -> AppResult<codex_runtime::CodexRunResult> {
+        codex_runtime::run_codex_request(
+            credentials,
+            &self.config.model,
+            &self.prompt.system,
+            prompt,
+            retrieval_context,
+            &self.config.codex_transport,
+        )
+        .await
     }
 }
 
@@ -446,43 +596,181 @@ impl AgentRuntime for NativeCodexRuntime {
             )
         })?;
 
-        let message = codex_runtime::run_codex_request(
-            &credentials,
-            &self.config.model,
-            &self.prompt.system,
-            &request.input,
-            &request.retrieval_context,
-        )
-        .await?;
+        let mut events = vec![AgentEvent {
+            kind: EventKind::UserMessage,
+            message: request.input.clone(),
+        }];
+        events.push(AgentEvent {
+            kind: EventKind::System,
+            message: "Analyzing request and recalled context".to_string(),
+        });
+        events.push(AgentEvent {
+            kind: EventKind::System,
+            message: format!("Provider profile: {}", self.config.provider.as_str()),
+        });
+        events.push(AgentEvent {
+            kind: EventKind::System,
+            message: format!("Codex native model: {}", self.config.model),
+        });
+        if !request.retrieval_context.is_empty() {
+            events.push(AgentEvent {
+                kind: EventKind::System,
+                message: format!(
+                    "Retrieved {} relevant memory items",
+                    request.retrieval_context.len()
+                ),
+            });
+        }
 
-        Ok(AgentResponse {
-            message,
-            events: vec![
-                AgentEvent {
+        let mut transcript = Vec::new();
+        let session = request.session.as_ref();
+
+        for turn in 0..MAX_TOOL_TURNS {
+            tracing::debug!(turn, "running native codex agent turn");
+            let mut prompt = self.build_step_prompt(&request.input, &transcript, session);
+            let retrieval_context = self.retrieval_context(&request.retrieval_context);
+            prompt.push_str(&format!("\n\nRetrieved context:\n{}\n", retrieval_context));
+            let result = self
+                .prompt_model(&credentials, &prompt, &request.retrieval_context)
+                .await?;
+            let raw = result.message;
+            events.push(AgentEvent {
+                kind: EventKind::System,
+                message: format!("Codex transport used: {}", result.transport.as_str()),
+            });
+            if result.refreshed {
+                events.push(AgentEvent {
                     kind: EventKind::System,
-                    message: "Analyzing request and recalled context".to_string(),
-                },
-                AgentEvent {
-                    kind: EventKind::System,
-                    message: format!("Provider profile: {}", self.config.provider.as_str()),
-                },
-                AgentEvent {
-                    kind: EventKind::System,
-                    message: format!("Codex native model: {}", self.config.model),
-                },
-                AgentEvent {
-                    kind: EventKind::System,
-                    message: format!(
-                        "Retrieved {} relevant memory items",
-                        request.retrieval_context.len()
-                    ),
-                },
-                AgentEvent {
-                    kind: EventKind::System,
-                    message: "Preparing final response".to_string(),
-                },
-            ],
-        })
+                    message: "Codex credentials refreshed during request".to_string(),
+                });
+            }
+
+            let Some(step) = RigAgentRuntime::parse_step(&raw) else {
+                events.push(AgentEvent {
+                    kind: EventKind::AgentMessage,
+                    message: "Model returned non-JSON fallback response".to_string(),
+                });
+                return Ok(RigAgentRuntime::fallback_response(raw, events));
+            };
+
+            match step.kind.as_str() {
+                "respond" => {
+                    let message = step.message.unwrap_or_else(|| raw.clone());
+                    events.push(AgentEvent {
+                        kind: EventKind::AgentMessage,
+                        message: message.clone(),
+                    });
+                    return Ok(AgentResponse { message, events });
+                }
+                "tool" => {
+                    let tool_name = step.tool_name.unwrap_or_default();
+                    let input = step.input.unwrap_or_else(|| json!({}));
+
+                    if self.tools.is_empty() {
+                        events.push(AgentEvent {
+                            kind: EventKind::System,
+                            message: "Model requested a tool, but no tools are enabled".to_string(),
+                        });
+                        return Ok(RigAgentRuntime::fallback_response(raw, events));
+                    }
+
+                    if tool_name == "apply_patch" && !self.config.allow_file_edits {
+                        let message = "File edits require explicit confirmation. Re-run with --yes or set RIG_ALLOW_FILE_EDITS=true.".to_string();
+                        events.push(AgentEvent {
+                            kind: EventKind::ConfirmationRequired,
+                            message: message.clone(),
+                        });
+                        transcript.push(format!(
+                            "Tool call on turn {} blocked:\nname={}\ninput={}\nreason={}",
+                            turn + 1,
+                            tool_name,
+                            input,
+                            message
+                        ));
+                        continue;
+                    }
+
+                    events.push(AgentEvent {
+                        kind: EventKind::ToolRequested,
+                        message: format!("{} {}", tool_name, input),
+                    });
+                    events.push(AgentEvent {
+                        kind: EventKind::ToolStarted,
+                        message: tool_name.clone(),
+                    });
+
+                    let output = match self.call_tool(&tool_name, input.clone()).await {
+                        Ok(output) => {
+                            events.push(AgentEvent {
+                                kind: EventKind::ToolCompleted,
+                                message: format!("{} -> {}", tool_name, output.content),
+                            });
+                            output
+                        }
+                        Err(error) => {
+                            let message = error.to_string();
+                            events.push(AgentEvent {
+                                kind: EventKind::ToolFailed,
+                                message: format!("{} -> {}", tool_name, message),
+                            });
+                            transcript.push(format!(
+                                "Tool call on turn {} failed:\nname={}\ninput={}\nerror={}",
+                                turn + 1,
+                                tool_name,
+                                input,
+                                message
+                            ));
+                            continue;
+                        }
+                    };
+
+                    transcript.push(format!(
+                        "Tool call on turn {}:\nname={}\ninput={}\nresult={}",
+                        turn + 1,
+                        tool_name,
+                        input,
+                        output.content
+                    ));
+                    events.push(AgentEvent {
+                        kind: EventKind::System,
+                        message: "Incorporating tool results into the answer".to_string(),
+                    });
+                }
+                _ => return Ok(RigAgentRuntime::fallback_response(raw, events)),
+            }
+        }
+
+        let prompt = format!(
+            "The tool turn limit was reached. Answer the personal assistant request directly using the gathered context, remembered user context, and retrieved context.\n\nRemembered user context:\n{}\n\nRetrieved context:\n{}\n\nContext:\n{}\n\nUser request:\n{}",
+            self.memory_context(session),
+            self.retrieval_context(&request.retrieval_context),
+            transcript.join("\n\n"),
+            request.input
+        );
+        let result = self
+            .prompt_model(&credentials, &prompt, &request.retrieval_context)
+            .await?;
+        let message = result.message;
+        events.push(AgentEvent {
+            kind: EventKind::System,
+            message: format!("Codex transport used: {}", result.transport.as_str()),
+        });
+        if result.refreshed {
+            events.push(AgentEvent {
+                kind: EventKind::System,
+                message: "Codex credentials refreshed during request".to_string(),
+            });
+        }
+        events.push(AgentEvent {
+            kind: EventKind::System,
+            message: "Preparing final response".to_string(),
+        });
+        events.push(AgentEvent {
+            kind: EventKind::AgentMessage,
+            message: message.clone(),
+        });
+
+        Ok(AgentResponse { message, events })
     }
 }
 

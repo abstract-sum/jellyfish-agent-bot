@@ -62,6 +62,7 @@ That means the long-term priorities are:
 - default provider profile: `codex`
 - default model: `gpt-5.4`
 - Jellyfish natively calls `https://chatgpt.com/backend-api/codex/responses`
+- Codex transport supports `auto`, `sse`, and `websocket` via `RIG_CODEX_TRANSPORT`
 - you can switch back to `openai` or `mock` with `RIG_PROVIDER`
 - Jellyfish reads OAuth credentials from `~/.codex/auth.json`
 - `codex-cli` remains available as a fallback provider if you want to delegate requests to the local CLI

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::{Path, PathBuf};
 
-use crate::types::ProviderKind;
+use crate::types::{CodexTransport, ProviderKind};
 use crate::{AppError, AppResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -15,6 +15,7 @@ pub struct AppConfig {
     pub allow_file_edits: bool,
     pub tool_timeout_secs: u64,
     pub tool_output_max_chars: usize,
+    pub codex_transport: CodexTransport,
 }
 
 impl Default for AppConfig {
@@ -28,6 +29,7 @@ impl Default for AppConfig {
             allow_file_edits: false,
             tool_timeout_secs: 10,
             tool_output_max_chars: 4_000,
+            codex_transport: CodexTransport::Auto,
         }
     }
 }
@@ -71,6 +73,12 @@ impl AppConfig {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(default.tool_output_max_chars);
+        let codex_transport = env::var("RIG_CODEX_TRANSPORT")
+            .ok()
+            .map(|value| value.parse())
+            .transpose()
+            .map_err(AppError::Config)?
+            .unwrap_or(default.codex_transport);
         let workspace_root = env::var("RIG_WORKSPACE_ROOT")
             .map(PathBuf::from)
             .unwrap_or(default.workspace_root);
@@ -98,6 +106,7 @@ impl AppConfig {
             allow_file_edits,
             tool_timeout_secs,
             tool_output_max_chars,
+            codex_transport,
         })
     }
 
@@ -123,5 +132,6 @@ mod tests {
         assert!(!config.allow_file_edits);
         assert_eq!(config.tool_timeout_secs, 10);
         assert_eq!(config.tool_output_max_chars, 4_000);
+        assert_eq!(config.codex_transport, CodexTransport::Auto);
     }
 }
