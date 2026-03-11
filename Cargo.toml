@@ -4,6 +4,9 @@ members = [
     "crates/agent",
     "crates/tools",
     "crates/cli",
+    "crates/schema",
+    "crates/gateway",
+    "crates/feishu-plugin",
 ]
 resolver = "2"
 

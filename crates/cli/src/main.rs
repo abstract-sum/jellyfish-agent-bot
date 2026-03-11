@@ -8,11 +8,14 @@ use anyhow::Result;
 use clap::Parser;
 use jellyfish_agent::{AgentRequest, build_runtime};
 use jellyfish_core::{AppConfig, MessageRole, ProviderKind};
+use jellyfish_feishu_plugin::{FeishuPluginConfig, plugin::FeishuPluginRuntime, probe::probe_feishu};
+use jellyfish_gateway::JellyfishGateway;
 use std::env;
 use std::io::{self, Write};
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
-use crate::args::{Cli, Commands, SessionCommands};
+use crate::args::{ChannelCommands, Cli, Commands, SessionCommands};
 use crate::retrieval::RetrievalSnapshot;
 
 fn codex_auth_cache_exists() -> bool {
@@ -27,6 +30,13 @@ fn codex_native_ready() -> bool {
     jellyfish_agent::codex_auth::load_codex_credentials()
         .map(|credentials| credentials.is_some())
         .unwrap_or(false)
+}
+
+fn feishu_env_status() -> (bool, bool) {
+    let has_app_id = env::var("FEISHU_APP_ID").is_ok() || env::var("LARK_APP_ID").is_ok();
+    let has_app_secret =
+        env::var("FEISHU_APP_SECRET").is_ok() || env::var("LARK_APP_SECRET").is_ok();
+    (has_app_id, has_app_secret)
 }
 
 #[tokio::main]
@@ -94,6 +104,55 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Channel { command } => match command {
+            ChannelCommands::FeishuProbe => {
+                let config = FeishuPluginConfig::from_env()?;
+                let probe = probe_feishu(&config).await?;
+                println!("Feishu probe succeeded.");
+                println!("Domain: {}", probe.domain);
+                println!("Connection mode: {}", probe.connection_mode);
+                println!("Default account: {}", probe.account_id);
+                println!("App ID prefix: {}", probe.app_id_prefix);
+                println!("Require mention in groups: {}", config.require_mention);
+            }
+            ChannelCommands::FeishuDoctor => {
+                let (has_app_id, has_app_secret) = feishu_env_status();
+                println!("Feishu/Lark doctor");
+                println!("FEISHU_APP_ID/LARK_APP_ID present: {}", has_app_id);
+                println!("FEISHU_APP_SECRET/LARK_APP_SECRET present: {}", has_app_secret);
+                match FeishuPluginConfig::from_env() {
+                    Ok(config) => {
+                        println!("Domain: {}", config.domain.open_base_url());
+                        println!(
+                            "Connection mode: {}",
+                            match config.connection_mode {
+                                jellyfish_feishu_plugin::FeishuConnectionMode::Websocket => "websocket",
+                                jellyfish_feishu_plugin::FeishuConnectionMode::Webhook => "webhook",
+                            }
+                        );
+                        println!("Default account: {}", config.default_account);
+                        println!("Require mention in groups: {}", config.require_mention);
+                        match probe_feishu(&config).await {
+                            Ok(_) => println!("Probe: ok"),
+                            Err(error) => println!("Probe: failed ({error})"),
+                        }
+                    }
+                    Err(error) => {
+                        println!("Config: invalid ({error})");
+                    }
+                }
+            }
+            ChannelCommands::FeishuStart { bot_open_id, dry_run } => {
+                let feishu_config = FeishuPluginConfig::from_env()?;
+                let gateway = Arc::new(JellyfishGateway::new(config.clone()));
+                println!("Starting Feishu websocket listener...");
+                println!("Domain: {}", feishu_config.domain.open_base_url());
+                println!("Default account: {}", feishu_config.default_account);
+                println!("Require mention in groups: {}", feishu_config.require_mention);
+                println!("Dry run: {}", dry_run);
+                FeishuPluginRuntime::start(&feishu_config, gateway, bot_open_id, dry_run).await?;
+            }
+        },
         Commands::Recall { query } => {
             let session = session_store::load_or_create(&config.workspace_root)?;
             let snapshot = RetrievalSnapshot::load(&config.workspace_root, &session)?;

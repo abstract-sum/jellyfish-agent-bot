@@ -30,6 +30,7 @@ Implemented so far:
 - native Codex OAuth runtime using `~/.codex/auth.json`
 - configurable Codex transports: `auto`, `sse`, `websocket`
 - `codex-cli` fallback provider
+- Feishu/Lark Milestone 1 channel integration via gateway + plugin crates
 
 ## Repository Layout
 
@@ -75,6 +76,27 @@ Inspect retrieval:
 
 ```bash
 cargo run -p jellyfish-cli -- recall "周日 规划"
+```
+
+Check Feishu/Lark credentials:
+
+```bash
+export FEISHU_APP_ID=cli_xxx
+export FEISHU_APP_SECRET=xxx
+cargo run -p jellyfish-cli -- channel feishu-probe
+cargo run -p jellyfish-cli -- channel feishu-doctor
+```
+
+Start the Feishu/Lark WebSocket listener:
+
+```bash
+cargo run -p jellyfish-cli -- channel feishu-start --bot-open-id ou_xxx
+```
+
+Start in dry-run mode for debugging without sending replies:
+
+```bash
+cargo run -p jellyfish-cli -- channel feishu-start --bot-open-id ou_xxx --dry-run
 ```
 
 ## Product Direction

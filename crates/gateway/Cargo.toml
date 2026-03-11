@@ -1,0 +1,13 @@
+[package]
+name = "jellyfish-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+jellyfish-agent = { path = "../agent" }
+jellyfish-core = { path = "../core" }
+jellyfish-schema = { path = "../schema" }
+serde_json.workspace = true

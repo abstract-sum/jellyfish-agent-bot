@@ -27,6 +27,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: SessionCommands,
     },
+    Channel {
+        #[command(subcommand)]
+        command: ChannelCommands,
+    },
     Recall {
         query: String,
     },
@@ -37,4 +41,19 @@ pub enum Commands {
 pub enum SessionCommands {
     Show,
     Reset,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChannelCommands {
+    FeishuProbe,
+    FeishuDoctor,
+    FeishuStart {
+        #[arg(long)]
+        bot_open_id: Option<String>,
+        #[arg(
+            long,
+            help = "Process inbound events but do not send replies back to Feishu"
+        )]
+        dry_run: bool,
+    },
 }

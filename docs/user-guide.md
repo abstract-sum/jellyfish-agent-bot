@@ -14,6 +14,7 @@ Current capabilities:
 - manage local `notes` and `todos` through the assistant runtime
 - use native Codex transport with `auto`, `sse`, or `websocket`
 - fall back to `codex-cli` or `mock` providers when needed
+- probe and start a Feishu/Lark channel integration from the CLI
 
 ## 2. Requirements
 
@@ -229,7 +230,62 @@ cargo test -p jellyfish-agent parses_output_text_deltas_into_final_message
 cargo test -p jellyfish-agent parses_websocket_json_events_into_final_message
 ```
 
-## 11. Troubleshooting
+## 11. Feishu / Lark Channel Milestone 1
+
+Jellyfish now includes a first Feishu/Lark integration layer built around:
+
+- `jellyfish-schema`
+- `jellyfish-gateway`
+- `jellyfish-feishu-plugin`
+
+Milestone 1 scope:
+
+- single account
+- websocket mode
+- text message parsing
+- DM handling
+- group handling with `@bot` requirement
+- gateway handoff into the Jellyfish runtime
+- text reply send-back
+
+Required environment variables:
+
+```bash
+export FEISHU_APP_ID=cli_xxx
+export FEISHU_APP_SECRET=xxx
+export FEISHU_DOMAIN=feishu   # or lark
+export FEISHU_CONNECTION_MODE=websocket
+export FEISHU_REQUIRE_MENTION=true
+```
+
+Probe configuration:
+
+```bash
+cargo run -p jellyfish-cli -- channel feishu-probe
+cargo run -p jellyfish-cli -- channel feishu-doctor
+```
+
+Start the listener:
+
+```bash
+cargo run -p jellyfish-cli -- channel feishu-start --bot-open-id ou_xxx
+```
+
+Start without sending replies back to Feishu/Lark:
+
+```bash
+cargo run -p jellyfish-cli -- channel feishu-start --bot-open-id ou_xxx --dry-run
+```
+
+Current limitations:
+
+- webhook mode is still scaffold-only
+- pairing / allowlist / group policy are not yet implemented
+- media, card replies, and streaming are not yet implemented
+- real Feishu tenant event subscription still needs environment-specific verification
+- dry-run mode still requires successful inbound event parsing to exercise the gateway path
+
+## 12. Troubleshooting
 
 If `doctor` says credentials are missing:
 
