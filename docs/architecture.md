@@ -2,31 +2,27 @@
 
 ## Overview
 
-Jellyfish is organized as a Rust workspace with clear module boundaries.
+Jellyfish is a Rust workspace organized around four primary concerns:
 
-The architecture is designed to support gradual delivery:
+- assistant runtime and providers
+- local tools and memory
+- user-facing CLI workflows
+- channel integration through a gateway and plugin model
 
-- common domain types live in a shared crate
-- runtime logic lives in a dedicated agent crate
-- tool contracts and implementations live in a tools crate
-- local execution starts from a CLI crate
-
-This keeps the codebase extensible without forcing early coupling between user interface, runtime, and execution details.
-
-Although the current Phase 1 implementation still includes repository-oriented tools, the product direction has shifted to a general personal assistant. The architecture remains valid because it separates assistant runtime concerns from any one tool domain.
+The architecture is designed to keep the personal assistant core independent from any one transport or channel while still making provider- and channel-specific behavior explicit.
 
 ## Workspace Layout
 
 ```text
 .
-├── Cargo.toml
-├── rust-toolchain.toml
-├── .env.example
 ├── crates/
 │   ├── core/
 │   ├── agent/
 │   ├── tools/
-│   └── cli/
+│   ├── cli/
+│   ├── schema/
+│   ├── gateway/
+│   └── feishu-plugin/
 └── docs/
 ```
 
@@ -34,103 +30,122 @@ Although the current Phase 1 implementation still includes repository-oriented t
 
 ### `crates/core`
 
-Purpose:
-
-- host shared domain types
-- define reusable configuration and error models
-- centralize session and event structures
+Shared domain types and stable cross-crate contracts.
 
 Responsibilities:
 
 - application configuration
-- shared result and error types
-- session state model
+- provider and transport enums
+- shared error model
+- session model
 - event model
-- shared identifiers and enums
+- memory and profile structures
 
-Current files:
+Key files:
 
 - `config.rs`
+- `types.rs`
 - `error.rs`
 - `event.rs`
 - `session.rs`
-- `types.rs`
-
-Why it exists:
-
-This crate prevents CLI, agent, and tool layers from redefining the same concepts in incompatible ways.
+- `memory.rs`
 
 ### `crates/agent`
 
-Purpose:
-
-- host the agent runtime abstraction
-- own prompt construction and later Rig integration
-- normalize request/response handling
+Assistant runtime and provider-specific execution logic.
 
 Responsibilities:
 
-- agent runtime trait
-- runtime request and response types
-- prompt templates
-- provider bootstrap in later phases
-- execution loop orchestration in later phases
-- user-context and memory integration in later phases
+- runtime selection via `build_runtime(...)`
+- prompt construction
+- tool loop orchestration
+- native Codex auth and transport handling
+- OpenAI-compatible and mock provider paths
 
-Current status:
+Key files:
 
-- contains a stub runtime only
-- does not yet call a real model provider
-
-Why it exists:
-
-This crate isolates model-specific logic from both the CLI and the tool layer, which is especially important now that the assistant may support multiple task domains instead of only code-related ones.
+- `runtime.rs`
+- `prompt.rs`
+- `codex_auth.rs`
+- `codex_runtime.rs`
+- `codex_cli.rs`
 
 ### `crates/tools`
 
-Purpose:
-
-- define the tool contract used by the runtime
-- provide registry and discovery for tools
+Local tool abstractions and implementations.
 
 Responsibilities:
 
-- tool trait definition
-- tool metadata and schema
-- tool output shape
-- registry for future tool lookup and dispatch
-- later support domain-specific tool groups such as productivity, knowledge, and local automation
-
-Current status:
-
-- abstractions only
-- no real file or command tools yet
-
-Why it exists:
-
-This crate allows tool capability to grow independently from runtime and interface concerns. It also lets the product evolve away from code-centric tools toward more general assistant capabilities without reshaping the runtime.
+- tool trait and registry
+- assistant-first tools like `notes` and `todos`
+- optional repo tools like `read`, `glob`, `grep`, and `apply_patch`
 
 ### `crates/cli`
 
-Purpose:
-
-- provide the local executable entrypoint
-- support developer validation during early phases
+User-facing command layer.
 
 Responsibilities:
 
-- argument parsing
-- command dispatch
-- output formatting
-- bootstrap logging and config loading
+- command parsing
+- session and retrieval wiring
+- user-facing output
+- Feishu channel commands
+
+Important commands today:
+
+- `chat`
+- `repl`
+- `doctor`
+- `session show/reset`
+- `recall`
+- `channel feishu-probe`
+- `channel feishu-doctor`
+- `channel feishu-start`
+
+### `crates/schema`
+
+Channel-agnostic message schema for IM and future transport integrations.
+
+Responsibilities:
+
+- `InboundMessage`
+- `OutboundMessage`
+- `ChannelKind`
+- `PeerKind`
+- `SessionLocator`
+
+This crate is the shared boundary between channel adapters and the assistant gateway.
+
+### `crates/gateway`
+
+Bridges channel messages into the Jellyfish runtime.
+
+Responsibilities:
+
+- convert `InboundMessage` into a routed assistant request
+- derive channel-scoped session keys
+- load and persist channel-scoped sessions
+- invoke the assistant runtime and package replies into `OutboundMessage`
+
+### `crates/feishu-plugin`
+
+Feishu/Lark channel integration crate.
+
+Responsibilities:
+
+- Feishu/Lark config parsing
+- websocket startup
+- event parsing
+- mention gating
+- message sending
+- probe/doctor support
 
 Current status:
 
-- supports a minimal scaffold with `chat` and `doctor`
-
-Why it exists:
-
-This crate keeps terminal interaction separate from agent runtime implementation.
+- Milestone 1 implemented
+- private-message loop validated end to end
+- group behavior still limited to mention gating
+- webhook, media, and richer policy layers are not yet implemented
 
 ## Dependency Boundaries
 
@@ -138,95 +153,106 @@ The intended dependency direction is:
 
 ```text
 cli -> agent -> core
-cli -> core
+cli -> gateway -> agent/core/schema
+cli -> feishu-plugin -> gateway/schema/core
+tools -> core
 agent -> tools -> core
+gateway -> schema
+feishu-plugin -> schema
 ```
 
 Constraints:
 
-- `core` should not depend on `agent`, `tools`, or `cli`
-- `tools` should depend on `core`, but not on `cli`
-- `agent` may depend on `tools` and `core`, but should not depend on `cli`
-- `cli` may depend on all runtime-facing crates, but should remain thin
+- `core` should not depend on higher-level crates
+- `schema` should remain channel/runtime neutral
+- `gateway` should not own provider-specific logic
+- channel plugins should not own assistant memory or provider behavior
+- `cli` remains the orchestration shell, not the business-logic center
 
 ## Runtime Shape
 
-The target runtime flow is:
+The assistant runtime flow is:
 
-1. receive user input
+1. receive user or channel input
 2. load session and user context
-3. construct prompt and runtime request
-4. invoke model
-5. process tool calls if needed
-6. update session and event stream
-7. render result to the user
+3. construct prompt and retrieval context
+4. invoke the selected provider
+5. execute tools if the model requests them
+6. update session and event history
+7. render or route the final response
 
-Phase 0 only implements a stub version of this flow. Phase 1 begins real model execution and tool invocation, but the long-term target is an assistant-centered flow rather than a repository-automation loop.
+For native Codex, the provider-specific transport flow is:
 
-## Session And Event Model
+1. load credentials from `~/.codex/auth.json`
+2. extract `chatgpt_account_id`
+3. refresh the token if needed
+4. select `auto`, `sse`, or `websocket`
+5. send request to `chatgpt.com/backend-api/codex/responses`
+6. parse streamed events into assistant text
 
-The shared data model should support future extension without changing the outer structure.
+## Memory And Retrieval
 
-### Session
+Jellyfish currently uses a local lightweight memory model.
 
-Session is responsible for:
+### Session Memory
 
-- stable session identity
-- ordered message history
-- ordered event history
+Stored in `./.jellyfish/session.json` and related channel-scoped files.
 
-This gives later phases a place to attach persistence, replay, and observability without redesigning the basic state model.
+Contains:
 
-In the personal assistant direction, session should eventually also capture user preferences, recurring tasks, and lightweight memory references.
+- user profile
+- memories
+- message history
+- event history
 
-### Event
+### Retrieval Snapshot
 
-The event layer is intended to represent:
+Built from:
 
-- user messages
-- agent messages
-- tool calls
-- tool results
-- system events
+- user profile
+- memory entries
+- notes
+- todos
+- recent messages
 
-This is important because later phases need clearer progress output and better execution tracing.
+The snapshot is used to create `retrieval_context` for assistant requests.
 
-## Configuration Strategy
+## Channel Model
 
-Configuration currently starts from simple defaults and environment variables.
+The current channel architecture is intentionally lightweight but already follows a plugin-friendly shape.
 
-The early config model should remain small:
+Current layers:
 
-- provider kind
-- model name
-- workspace root
-- log filter
+- `schema`: stable message DTOs
+- `gateway`: routing and session bridge
+- `feishu-plugin`: first concrete channel implementation
 
-This is enough for Phase 1 while still leaving room for later expansion into timeout settings, tool permissions, and persistence configuration.
+This makes it possible to add more channels later without pushing channel-specific logic into the assistant runtime.
 
-As the project shifts toward a personal assistant, configuration will likely expand to cover memory settings, user profile sources, and service integrations.
+## Feishu / Lark Milestone 1 Scope
 
-## Architectural Non-Goals For Early Phases
+Currently implemented:
 
-The architecture intentionally avoids the following in the early stages:
+- websocket mode
+- private-message text handling
+- mention-gated group handling
+- dry-run mode
+- channel probe and doctor commands
+- duplicate inbound message suppression by `message_id`
 
-- plugin over-engineering
-- distributed runtime coordination
-- complex policy engines
-- heavy persistence integration before the core loop is stable
-- UI-specific data modeling in shared crates
+Not yet implemented:
 
-It also avoids locking the product into a repository-centric mental model. Code tools may remain available, but they should become optional capabilities rather than the defining architecture.
+- webhook mode
+- pairing and allowlist
+- group policy variations
+- media handling
+- rich cards and streaming cards
+- multi-account channel config
+- Feishu platform tool packs
 
-## Phase 0 Outcome
+## Current Follow-Up Work
 
-Phase 0 establishes the structural foundation for the project:
-
-- compileable workspace
-- stable crate boundaries
-- shared domain model
-- stub runtime
-- tool registry abstraction
-- CLI scaffold
-
-This foundation is considered successful because future phases can now add real capability without reorganizing the repository.
+- improve native Codex tool-calling stability across multi-turn loops
+- refine native Codex recovery and provider-specific errors
+- complete Feishu Milestone 2 policy layers
+- decide when to formalize plugin metadata and discovery

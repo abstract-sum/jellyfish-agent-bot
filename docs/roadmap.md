@@ -229,6 +229,45 @@ The repository is currently adapted for native Codex by default:
 - OAuth credentials are read from `~/.codex/auth.json`
 - `codex-cli` remains available as a fallback provider for shell-out execution
 
+## Feishu / Lark Channel Roadmap
+
+### Milestone 1
+
+Status: Completed.
+
+Delivered:
+
+- channel-agnostic message schema
+- gateway crate for IM-to-runtime routing
+- Feishu/Lark config parsing
+- websocket listener path
+- text message parsing
+- private-message loop working end to end
+- group mention gating
+- `feishu-probe`, `feishu-doctor`, and `feishu-start`
+- dry-run mode for safe debugging
+- duplicate inbound event suppression by `message_id`
+
+### Milestone 2
+
+Planned:
+
+- pairing flow
+- DM allowlist
+- group policy
+- group allowlist
+- mention bypass rules
+
+### Milestone 3
+
+Planned:
+
+- webhook mode
+- reply/root/parent context
+- media support
+- richer render modes
+- card and streaming output
+
 ## Native Codex Follow-Up Todo
 
 - improve native Codex tool-calling stability across multi-turn loops

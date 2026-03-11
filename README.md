@@ -1,36 +1,23 @@
 # Jellyfish
 
-Jellyfish is a Rig-based AI personal assistant project built in phases.
-
-The default local profile is tuned for Codex-compatible OpenAI models.
-
-The current implementation focus is:
-
-- CLI-first
-- single-agent first
-- core assistant workflow before advanced platform features
+Jellyfish is a Rust-based AI personal assistant with native Codex support, local memory, retrieval, and early IM channel integration.
 
 ## Current Status
 
-Phase 0 through Phase 4 are complete, and the native Codex runtime is working end to end.
+The project has completed the original Phase 0 through Phase 4 assistant milestones and now includes additional native Codex and Feishu/Lark integration work.
 
 Implemented so far:
 
-- Rust workspace scaffold
-- `core`, `agent`, `tools`, and `cli` crate boundaries
-- shared configuration, error, session, and event types
-- persistent local session storage in `./.jellyfish/session.json`
-- personal-assistant memory/profile model with relevance-based recall
-- assistant-first `notes` and `todos` tools
-- REPL mode for ongoing local conversations
-- clearer progress and summary output for each assistant turn
-- confirmation gates for dangerous file-edit tools
-- retrieval across profile, memories, notes, todos, and conversation history
-- `recall` command for inspecting retrieved context
-- native Codex OAuth runtime using `~/.codex/auth.json`
-- configurable Codex transports: `auto`, `sse`, `websocket`
+- Rust workspace scaffold with clear crate boundaries
+- native Codex runtime using `~/.codex/auth.json`
+- Codex transport modes: `auto`, `sse`, `websocket`
 - `codex-cli` fallback provider
-- Feishu/Lark Milestone 1 channel integration via gateway + plugin crates
+- persistent local session storage in `./.jellyfish/session.json`
+- memory/profile model with lightweight retrieval
+- assistant-first `notes` and `todos` tools
+- REPL mode, recall, session inspection, and doctor commands
+- progress/summary output and dangerous file-edit confirmation gates
+- Feishu/Lark Milestone 1 channel integration through schema + gateway + plugin crates
 
 ## Repository Layout
 
@@ -40,21 +27,16 @@ Implemented so far:
 │   ├── core/
 │   ├── agent/
 │   ├── tools/
-│   └── cli/
+│   ├── cli/
+│   ├── schema/
+│   ├── gateway/
+│   └── feishu-plugin/
 └── docs/
 ```
 
-## Documentation
-
-- `docs/vision.md`: product goals, principles, and deferred items
-- `docs/architecture.md`: workspace structure and crate responsibilities
-- `docs/roadmap.md`: phased implementation plan and milestones
-- `docs/user-guide.md`: setup, usage, providers, memory, retrieval, and test guide
-- `docs/README.md`: documentation index
-
 ## Quick Start
 
-Check the current runtime:
+Check runtime status:
 
 ```bash
 cargo run -p jellyfish-cli -- doctor
@@ -72,57 +54,74 @@ Start an interactive session:
 cargo run -p jellyfish-cli -- repl
 ```
 
-Inspect retrieval:
+Inspect retrieval hits:
 
 ```bash
 cargo run -p jellyfish-cli -- recall "周日 规划"
 ```
 
-Check Feishu/Lark credentials:
+## Codex Runtime
+
+- default provider profile: `codex`
+- default model: `gpt-5.4`
+- native endpoint: `https://chatgpt.com/backend-api/codex/responses`
+- transport selection via `RIG_CODEX_TRANSPORT=auto|sse|websocket`
+- credentials loaded from `~/.codex/auth.json`
+- `codex-cli` remains available as a shell-out fallback
+
+## Feishu / Lark Milestone 1
+
+Current Feishu/Lark scope:
+
+- single account
+- websocket mode
+- text message parsing
+- private-message loop working end to end
+- group messages gated by `@bot`
+- dry-run, probe, and doctor commands
+
+Set environment variables:
 
 ```bash
 export FEISHU_APP_ID=cli_xxx
 export FEISHU_APP_SECRET=xxx
-cargo run -p jellyfish-cli -- channel feishu-probe
-cargo run -p jellyfish-cli -- channel feishu-doctor
+export FEISHU_DOMAIN=feishu   # or lark
+export FEISHU_CONNECTION_MODE=websocket
+export FEISHU_REQUIRE_MENTION=true
 ```
 
-Start the Feishu/Lark WebSocket listener:
+Probe and inspect the channel config:
+
+```bash
+cargo run -p jellyfish-cli -- channel feishu-doctor
+cargo run -p jellyfish-cli -- channel feishu-probe
+```
+
+Start the websocket listener:
 
 ```bash
 cargo run -p jellyfish-cli -- channel feishu-start --bot-open-id ou_xxx
 ```
 
-Start in dry-run mode for debugging without sending replies:
+Start in dry-run mode without sending replies:
 
 ```bash
 cargo run -p jellyfish-cli -- channel feishu-start --bot-open-id ou_xxx --dry-run
 ```
 
-## Product Direction
+## Documentation
 
-Jellyfish is being positioned as a general personal assistant rather than a code agent.
-
-That means the long-term priorities are:
-
-- conversation and task assistance first
-- memory and user context before code execution
-- optional tools for utility tasks, not repo automation as the primary value
-
-## Codex Compatibility
-
-- default provider profile: `codex`
-- default model: `gpt-5.4`
-- Jellyfish natively calls `https://chatgpt.com/backend-api/codex/responses`
-- Codex transport supports `auto`, `sse`, and `websocket` via `RIG_CODEX_TRANSPORT`
-- you can switch back to `openai` or `mock` with `RIG_PROVIDER`
-- Jellyfish reads OAuth credentials from `~/.codex/auth.json`
-- `codex-cli` remains available as a fallback provider if you want to delegate requests to the local CLI
-
-## User Manual
-
-For a full user-facing manual, see `docs/user-guide.md`.
+- `docs/vision.md`: product goals and design principles
+- `docs/architecture.md`: current crate structure, runtime layers, and channel model
+- `docs/roadmap.md`: phased delivery plan and current follow-up work
+- `docs/user-guide.md`: user-facing setup and command guide
+- `docs/developer-guide.md`: developer-facing runtime, provider, and debugging notes
+- `docs/README.md`: docs index
 
 ## Next Step
 
-The next implementation targets are follow-up native Codex polish and Phase 5 orchestration work.
+The next implementation targets are:
+
+- native Codex stability and recovery polish
+- Feishu/Lark Milestone 2: pairing, allowlist, and group policy
+- Phase 5 orchestration work after the single-assistant runtime is considered stable

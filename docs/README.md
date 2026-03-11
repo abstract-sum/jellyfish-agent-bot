@@ -14,10 +14,11 @@ For the repository overview, start with the root `README.md`.
 
 ## Current Focus
 
-The repository has completed Phase 0 through Phase 4.
+The repository has completed Phase 0 through Phase 4 and now includes working native Codex plus Feishu/Lark Milestone 1 channel integration.
 
 - native Codex runtime and Codex CLI fallback
 - local session persistence, retrieval, notes, and todos
 - assistant REPL, recall, and doctor workflows
+- schema + gateway + Feishu plugin crates
 
-The next implementation target is Phase 5 and later provider/runtime polish.
+The next implementation targets are native Codex polish, Feishu Milestone 2 policy layers, and later Phase 5 orchestration work.

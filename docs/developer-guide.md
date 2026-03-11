@@ -22,7 +22,10 @@ The repository is organized as a Rust workspace:
 │   ├── core/
 │   ├── agent/
 │   ├── tools/
-│   └── cli/
+│   ├── cli/
+│   ├── schema/
+│   ├── gateway/
+│   └── feishu-plugin/
 └── docs/
 ```
 
@@ -72,6 +75,43 @@ Important modules:
 - `memory.rs`: simple phrase-based memory capture
 - `retrieval.rs`: retrieval snapshot and local ranking
 - `session_store.rs`: session persistence to `./.jellyfish/session.json`
+
+### `crates/schema`
+
+Channel-agnostic schema used by gateway and IM plugins.
+
+Important types:
+
+- `InboundMessage`
+- `OutboundMessage`
+- `ChannelKind`
+- `PeerKind`
+- `SessionLocator`
+
+### `crates/gateway`
+
+Bridges IM input into the Jellyfish assistant runtime.
+
+Responsibilities:
+
+- derive channel-scoped session keys
+- load and save channel sessions
+- invoke Jellyfish runtime from `InboundMessage`
+- package responses into `OutboundMessage`
+
+### `crates/feishu-plugin`
+
+Feishu/Lark channel integration.
+
+Important modules:
+
+- `config.rs`: Feishu/Lark env and config parsing
+- `types.rs`: Feishu event DTOs
+- `parse.rs`: event-to-inbound-message mapping
+- `send.rs`: Feishu outbound message sending
+- `probe.rs`: focused Feishu diagnostics
+- `websocket.rs`: stream startup and duplicate-event suppression
+- `plugin.rs`: glue layer between channel and gateway
 
 ## 3. Runtime Modes
 
@@ -277,8 +317,20 @@ Check:
 - whether `recall` shows the expected hits
 - whether the request contains enough matching terms for the local ranking logic
 
+### If Feishu / Lark behaves unexpectedly
+
+Check:
+
+- `cargo run -p jellyfish-cli -- channel feishu-doctor`
+- `cargo run -p jellyfish-cli -- channel feishu-probe`
+- whether `FEISHU_APP_ID` / `FEISHU_APP_SECRET` are exported in the same shell
+- whether websocket mode is enabled
+- whether private messages succeed before testing group behavior
+- whether logs show `Feishu duplicate message ignored` or `Feishu outbound message sent`
+
 ## 11. Current Known Follow-Up Work
 
 - improve native Codex tool-calling stability across multi-turn loops
 - refine failure recovery and provider-specific error messaging for native Codex requests
+- complete Feishu Milestone 2 pairing / allowlist / group policy work
 - continue Phase 5 multi-agent exploration after the single-assistant runtime is considered stable
