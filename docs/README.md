@@ -10,6 +10,7 @@ For the repository overview, start with the root `README.md`.
 - `docs/architecture.md`: workspace structure, crate responsibilities, and technical boundaries.
 - `docs/roadmap.md`: phased delivery plan, milestones, and acceptance criteria.
 - `docs/user-guide.md`: setup, commands, providers, memory, retrieval, and testing guide.
+- `docs/developer-guide.md`: crate layout, provider internals, runtime flow, and debugging notes.
 
 ## Current Focus
 
