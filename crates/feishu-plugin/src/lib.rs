@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod channel;
 pub mod config;
+pub mod dedup;
 pub mod parse;
 pub mod plugin;
 pub mod probe;

@@ -1,6 +1,5 @@
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
@@ -13,6 +12,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::config::{FeishuConnectionMode, FeishuPluginConfig};
+use crate::dedup::{DedupStore, default_dedup_path};
 use crate::plugin::FeishuPluginRuntime;
 use crate::types::FeishuEventEnvelope;
 
@@ -33,7 +33,7 @@ pub async fn start_websocket_listener(
             gateway,
             bot_open_id,
             dry_run,
-            seen_messages: Arc::new(Mutex::new(HashMap::new())),
+            dedup_store: Arc::new(Mutex::new(DedupStore::load(default_dedup_path()?)?)),
             chat_locks: Arc::new(Mutex::new(HashMap::new())),
         }))
         .await;
@@ -76,37 +76,14 @@ struct FeishuMessageHandler {
     gateway: Arc<dyn GatewayService>,
     bot_open_id: Option<String>,
     dry_run: bool,
-    seen_messages: Arc<Mutex<HashMap<String, Instant>>>,
+    dedup_store: Arc<Mutex<DedupStore>>,
     chat_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl FeishuMessageHandler {
-    async fn should_process_message(&self, message_id: &str) -> bool {
-        const DEDUPE_WINDOW: Duration = Duration::from_secs(30 * 60);
-        const DEDUPE_MAX_SIZE: usize = 1_000;
-
-        let mut seen = self.seen_messages.lock().await;
-        let now = Instant::now();
-        seen.retain(|_, timestamp| now.duration_since(*timestamp) < DEDUPE_WINDOW);
-
-        let dedupe_key = format!("{}:{}", self.config.default_account, message_id);
-
-        if seen.contains_key(&dedupe_key) {
-            return false;
-        }
-
-        if seen.len() >= DEDUPE_MAX_SIZE {
-            if let Some(oldest_key) = seen
-                .iter()
-                .min_by_key(|(_, timestamp)| *timestamp)
-                .map(|(key, _)| key.clone())
-            {
-                seen.remove(&oldest_key);
-            }
-        }
-
-        seen.insert(dedupe_key, now);
-        true
+    async fn should_process_message(&self, event_id: Option<&str>, message_id: &str) -> Result<bool> {
+        let mut store = self.dedup_store.lock().await;
+        store.should_process(&self.config.default_account, event_id, message_id)
     }
 
     async fn chat_lock(&self, chat_id: &str) -> Arc<Mutex<()>> {
@@ -129,6 +106,7 @@ impl EventHandler for FeishuMessageHandler {
         event: Event,
     ) -> Pin<Box<dyn std::future::Future<Output = EventHandlerResult> + Send + '_>> {
         Box::pin(async move {
+            let event_id = event.event_id().map(ToString::to_string);
             let envelope = FeishuEventEnvelope {
                 event: event
                     .event
@@ -152,8 +130,12 @@ impl EventHandler for FeishuMessageHandler {
                 return Ok(None);
             };
 
-            if !self.should_process_message(message_id).await {
-                info!(message_id = %message_id, "Feishu duplicate message ignored");
+            if !self
+                .should_process_message(event_id.as_deref(), message_id)
+                .await
+                .map_err(|error| feishu_sdk::core::Error::WebSocketError(error.to_string()))?
+            {
+                info!(event_id = ?event_id, message_id = %message_id, "Feishu duplicate message ignored");
                 return Ok(None);
             }
 
