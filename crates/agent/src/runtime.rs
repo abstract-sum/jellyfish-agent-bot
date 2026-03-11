@@ -12,7 +12,7 @@ use rig::{
 };
 
 use jellyfish_core::{AgentEvent, AppConfig, AppError, AppResult, EventKind, Session};
-use jellyfish_tools::{ApplyPatchTool, GlobTool, GrepTool, NoteTool, ReadTool, TodoTool, ToolRegistry};
+use jellyfish_tools::{ApplyPatchTool, BashTool, GlobTool, GrepTool, NoteTool, ReadTool, TodoTool, ToolRegistry};
 
 use crate::{codex_auth, codex_cli, codex_runtime, prompt::PromptTemplate, traits::AgentRuntime};
 
@@ -62,6 +62,7 @@ impl RigAgentRuntime {
         let mut tools = ToolRegistry::new();
         tools.register(NoteTool::new(config.workspace_root.clone()));
         tools.register(TodoTool::new(config.workspace_root.clone()));
+        tools.register(BashTool::new(config.workspace_root.clone()));
         if config.enable_repo_tools {
             tools.register(ReadTool::new(config.workspace_root.clone()));
             tools.register(GlobTool::new(config.workspace_root.clone()));
@@ -183,6 +184,10 @@ impl RigAgentRuntime {
     }
 
     async fn call_tool(&self, tool_name: &str, input: Value) -> AppResult<jellyfish_tools::ToolOutput> {
+        if tool_name == "bash" {
+            return self.tools.call(tool_name, input).await;
+        }
+
         let output = timeout(
             Duration::from_secs(self.config.tool_timeout_secs),
             self.tools.call(tool_name, input),
@@ -433,6 +438,7 @@ impl NativeCodexRuntime {
         let mut tools = ToolRegistry::new();
         tools.register(NoteTool::new(config.workspace_root.clone()));
         tools.register(TodoTool::new(config.workspace_root.clone()));
+        tools.register(BashTool::new(config.workspace_root.clone()));
         if config.enable_repo_tools {
             tools.register(ReadTool::new(config.workspace_root.clone()));
             tools.register(GlobTool::new(config.workspace_root.clone()));
@@ -508,6 +514,10 @@ impl NativeCodexRuntime {
     }
 
     async fn call_tool(&self, tool_name: &str, input: Value) -> AppResult<jellyfish_tools::ToolOutput> {
+        if tool_name == "bash" {
+            return self.tools.call(tool_name, input).await;
+        }
+
         let output = timeout(
             Duration::from_secs(self.config.tool_timeout_secs),
             self.tools.call(tool_name, input),
@@ -850,6 +860,7 @@ impl MockAgentRuntime {
         let mut tools = ToolRegistry::new();
         tools.register(NoteTool::new(config.workspace_root.clone()));
         tools.register(TodoTool::new(config.workspace_root.clone()));
+        tools.register(BashTool::new(config.workspace_root.clone()));
         if config.enable_repo_tools {
             tools.register(ReadTool::new(config.workspace_root.clone()));
             tools.register(GlobTool::new(config.workspace_root.clone()));

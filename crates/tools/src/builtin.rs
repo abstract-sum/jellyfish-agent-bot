@@ -1,10 +1,12 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::process::Command;
 use walkdir::WalkDir;
 
 use jellyfish_core::{AppError, AppResult};
@@ -233,6 +235,82 @@ impl Tool for GrepTool {
             } else {
                 format!("Matches for {}:\n{}", args.pattern, matches.join("\n"))
             },
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BashTool {
+    workspace_root: PathBuf,
+}
+
+impl BashTool {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BashArgs {
+    command: String,
+    workdir: Option<String>,
+}
+
+#[async_trait]
+impl Tool for BashTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "bash".to_string(),
+            description: "Execute any shell command on the local machine".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute"},
+                    "workdir": {"type": "string", "description": "Optional working directory, absolute or relative"}
+                },
+                "required": ["command"]
+            }),
+        }
+    }
+
+    async fn call(&self, input: Value) -> AppResult<ToolOutput> {
+        let args: BashArgs = serde_json::from_value(input)?;
+        let working_directory = match args.workdir.as_deref() {
+            Some(dir) if !dir.trim().is_empty() => {
+                let path = PathBuf::from(dir);
+                if path.is_absolute() {
+                    path
+                } else {
+                    self.workspace_root.join(path)
+                }
+            }
+            _ => self.workspace_root.clone(),
+        };
+
+        let started = Instant::now();
+        let output = Command::new("bash")
+            .arg("-lc")
+            .arg(&args.command)
+            .current_dir(&working_directory)
+            .output()
+            .await?;
+        let duration_ms = started.elapsed().as_millis();
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code();
+        let success = output.status.success();
+
+        Ok(ToolOutput {
+            content: serde_json::to_string_pretty(&json!({
+                "command": args.command,
+                "workdir": working_directory.display().to_string(),
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+                "success": success,
+                "duration_ms": duration_ms,
+            }))?,
         })
     }
 }
@@ -833,6 +911,47 @@ mod tests {
 
         let output = tool.call(json!({ "action": "list" })).await.unwrap();
         assert!(output.content.contains("[done]"));
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bash_tool_executes_simple_command() {
+        let workspace = temp_workspace();
+        let tool = BashTool::new(workspace.clone());
+
+        let output = tool
+            .call(json!({ "command": "printf hello" }))
+            .await
+            .unwrap();
+
+        assert!(output.content.contains("\"stdout\": \"hello\""));
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bash_tool_uses_custom_workdir() {
+        let workspace = temp_workspace();
+        fs::create_dir_all(workspace.join("nested")).unwrap();
+        let tool = BashTool::new(workspace.clone());
+
+        let output = tool
+            .call(json!({ "command": "pwd", "workdir": "nested" }))
+            .await
+            .unwrap();
+
+        assert!(output.content.contains(&workspace.join("nested").display().to_string()));
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bash_tool_returns_nonzero_exit_code() {
+        let workspace = temp_workspace();
+        let tool = BashTool::new(workspace.clone());
+
+        let output = tool.call(json!({ "command": "exit 7" })).await.unwrap();
+
+        assert!(output.content.contains("\"exit_code\": 7"));
+        assert!(output.content.contains("\"success\": false"));
         fs::remove_dir_all(workspace).unwrap();
     }
 }
