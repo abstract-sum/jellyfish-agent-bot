@@ -12,7 +12,7 @@ The current implementation focus is:
 
 ## Current Status
 
-Phase 0 through Phase 4 are complete.
+Phase 0 through Phase 4 are complete, and the native Codex runtime is working end to end.
 
 Implemented so far:
 
@@ -27,6 +27,9 @@ Implemented so far:
 - confirmation gates for dangerous file-edit tools
 - retrieval across profile, memories, notes, todos, and conversation history
 - `recall` command for inspecting retrieved context
+- native Codex OAuth runtime using `~/.codex/auth.json`
+- configurable Codex transports: `auto`, `sse`, `websocket`
+- `codex-cli` fallback provider
 
 ## Repository Layout
 
@@ -45,7 +48,34 @@ Implemented so far:
 - `docs/vision.md`: product goals, principles, and deferred items
 - `docs/architecture.md`: workspace structure and crate responsibilities
 - `docs/roadmap.md`: phased implementation plan and milestones
+- `docs/user-guide.md`: setup, usage, providers, memory, retrieval, and test guide
 - `docs/README.md`: documentation index
+
+## Quick Start
+
+Check the current runtime:
+
+```bash
+cargo run -p jellyfish-cli -- doctor
+```
+
+Run one native Codex-backed assistant turn:
+
+```bash
+cargo run -p jellyfish-cli -- chat "你好，简单介绍一下你自己"
+```
+
+Start an interactive session:
+
+```bash
+cargo run -p jellyfish-cli -- repl
+```
+
+Inspect retrieval:
+
+```bash
+cargo run -p jellyfish-cli -- recall "周日 规划"
+```
 
 ## Product Direction
 
@@ -67,10 +97,10 @@ That means the long-term priorities are:
 - Jellyfish reads OAuth credentials from `~/.codex/auth.json`
 - `codex-cli` remains available as a fallback provider if you want to delegate requests to the local CLI
 
+## User Manual
+
+For a full user-facing manual, see `docs/user-guide.md`.
+
 ## Next Step
 
-The next implementation target is Phase 1:
-
-- integrate Rig runtime support
-- add initial assistant-facing tools
-- connect the CLI to a real agent execution path
+The next implementation targets are follow-up native Codex polish and Phase 5 orchestration work.

@@ -9,14 +9,14 @@ For the repository overview, start with the root `README.md`.
 - `docs/vision.md`: project goals, product direction, design principles, and deferred items.
 - `docs/architecture.md`: workspace structure, crate responsibilities, and technical boundaries.
 - `docs/roadmap.md`: phased delivery plan, milestones, and acceptance criteria.
+- `docs/user-guide.md`: setup, commands, providers, memory, retrieval, and testing guide.
 
 ## Current Focus
 
-The repository has completed Phase 0:
+The repository has completed Phase 0 through Phase 4.
 
-- Rust workspace scaffold
-- core / agent / tools / cli crate boundaries
-- compileable CLI skeleton
-- shared configuration, error, session, and event types
+- native Codex runtime and Codex CLI fallback
+- local session persistence, retrieval, notes, and todos
+- assistant REPL, recall, and doctor workflows
 
-The next implementation target is Phase 1.
+The next implementation target is Phase 5 and later provider/runtime polish.
