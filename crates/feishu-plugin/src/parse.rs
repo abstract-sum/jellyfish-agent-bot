@@ -56,6 +56,10 @@ pub fn parse_inbound_message(
         .or(event.sender.sender_id.user_id)
         .unwrap_or_default();
 
+    if !bot_open_id.is_empty() && sender_id == bot_open_id {
+        return None;
+    }
+
     Some(InboundMessage {
         channel: ChannelKind::Feishu,
         account_id: account_id.to_string(),
@@ -110,5 +114,11 @@ mod tests {
         let envelope: FeishuEventEnvelope = serde_json::from_str(r#"{"event":{"sender":{"sender_id":{"open_id":"ou_user"}},"message":{"message_id":"om_1","chat_id":"oc_group","chat_type":"group","create_time":"123","message_type":"text","content":"{\"text\":\"@Jellyfish hello\"}","mentions":[{"name":"Jellyfish","id":{"open_id":"ou_bot"}}]}}}"#).unwrap();
         let message = parse_inbound_message(envelope, Some("ou_bot"), "main", true).unwrap();
         assert_eq!(message.text, "hello");
+    }
+
+    #[test]
+    fn ignores_bot_authored_message() {
+        let envelope: FeishuEventEnvelope = serde_json::from_str(r#"{"event":{"sender":{"sender_id":{"open_id":"ou_bot"}},"message":{"message_id":"om_2","chat_id":"oc_dm","chat_type":"p2p","create_time":"123","message_type":"text","content":"{\"text\":\"hello from bot\"}"}}}"#).unwrap();
+        assert!(parse_inbound_message(envelope, Some("ou_bot"), "main", true).is_none());
     }
 }

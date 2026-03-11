@@ -61,7 +61,7 @@ impl FeishuPluginRuntime {
                 FeishuChannelPlugin::send_outbound(config, &outbound).await?;
             }
         } else {
-            warn!("Feishu event ignored because it did not match the Milestone 1 message rules");
+            warn!("Feishu event ignored because it did not match the Milestone 1 message rules or was authored by the bot itself");
         }
 
         Ok(())
