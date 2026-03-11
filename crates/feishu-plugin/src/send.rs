@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use reqwest::Client;
 use serde_json::json;
+use tracing::{info, warn};
 
 use crate::config::FeishuPluginConfig;
 
@@ -42,7 +43,12 @@ pub async fn send_text(config: &FeishuPluginConfig, chat_id: &str, text: &str) -
         .await?;
 
     if !response.status().is_success() {
-        return Err(anyhow!("Feishu send failed with {}", response.status()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        warn!(chat_id = %chat_id, status = %status, body = %body, "Feishu send failed");
+        return Err(anyhow!("Feishu send failed with {}: {}", status, body));
     }
+
+    info!(chat_id = %chat_id, text = %text, "Feishu outbound message sent");
     Ok(())
 }
