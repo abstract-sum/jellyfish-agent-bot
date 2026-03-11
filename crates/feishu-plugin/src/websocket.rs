@@ -1,6 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
 use feishu_sdk::core::{Config, LogLevel, new_logger};
@@ -32,7 +33,8 @@ pub async fn start_websocket_listener(
             gateway,
             bot_open_id,
             dry_run,
-            seen_messages: Arc::new(Mutex::new(Vec::new())),
+            seen_messages: Arc::new(Mutex::new(HashMap::new())),
+            chat_locks: Arc::new(Mutex::new(HashMap::new())),
         }))
         .await;
 
@@ -74,23 +76,46 @@ struct FeishuMessageHandler {
     gateway: Arc<dyn GatewayService>,
     bot_open_id: Option<String>,
     dry_run: bool,
-    seen_messages: Arc<Mutex<Vec<(String, Instant)>>>,
+    seen_messages: Arc<Mutex<HashMap<String, Instant>>>,
+    chat_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 impl FeishuMessageHandler {
     async fn should_process_message(&self, message_id: &str) -> bool {
-        const DEDUPE_WINDOW: Duration = Duration::from_secs(300);
+        const DEDUPE_WINDOW: Duration = Duration::from_secs(30 * 60);
+        const DEDUPE_MAX_SIZE: usize = 1_000;
 
         let mut seen = self.seen_messages.lock().await;
         let now = Instant::now();
-        seen.retain(|(_, timestamp)| now.duration_since(*timestamp) < DEDUPE_WINDOW);
+        seen.retain(|_, timestamp| now.duration_since(*timestamp) < DEDUPE_WINDOW);
 
-        if seen.iter().any(|(existing, _)| existing == message_id) {
+        let dedupe_key = format!("{}:{}", self.config.default_account, message_id);
+
+        if seen.contains_key(&dedupe_key) {
             return false;
         }
 
-        seen.push((message_id.to_string(), now));
+        if seen.len() >= DEDUPE_MAX_SIZE {
+            if let Some(oldest_key) = seen
+                .iter()
+                .min_by_key(|(_, timestamp)| *timestamp)
+                .map(|(key, _)| key.clone())
+            {
+                seen.remove(&oldest_key);
+            }
+        }
+
+        seen.insert(dedupe_key, now);
         true
+    }
+
+    async fn chat_lock(&self, chat_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.chat_locks.lock().await;
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        locks
+            .entry(chat_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 }
 
@@ -119,11 +144,21 @@ impl EventHandler for FeishuMessageHandler {
             else {
                 return Ok(None);
             };
+            let Some(chat_id) = envelope
+                .event
+                .as_ref()
+                .map(|event| event.message.chat_id.as_str())
+            else {
+                return Ok(None);
+            };
 
             if !self.should_process_message(message_id).await {
                 info!(message_id = %message_id, "Feishu duplicate message ignored");
                 return Ok(None);
             }
+
+            let chat_lock = self.chat_lock(chat_id).await;
+            let _guard = chat_lock.lock().await;
 
             FeishuPluginRuntime::handle_event(
                 &self.config,
