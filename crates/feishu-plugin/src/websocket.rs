@@ -1,5 +1,6 @@
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use feishu_sdk::core::{Config, LogLevel, new_logger};
@@ -7,6 +8,7 @@ use feishu_sdk::event::{Event, EventDispatcher, EventDispatcherConfig, EventHand
 use feishu_sdk::ws::StreamClient;
 use jellyfish_gateway::GatewayService;
 use rustls::crypto::{CryptoProvider, ring::default_provider};
+use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::config::{FeishuConnectionMode, FeishuPluginConfig};
@@ -30,6 +32,7 @@ pub async fn start_websocket_listener(
             gateway,
             bot_open_id,
             dry_run,
+            seen_messages: Arc::new(Mutex::new(Vec::new())),
         }))
         .await;
 
@@ -71,6 +74,24 @@ struct FeishuMessageHandler {
     gateway: Arc<dyn GatewayService>,
     bot_open_id: Option<String>,
     dry_run: bool,
+    seen_messages: Arc<Mutex<Vec<(String, Instant)>>>,
+}
+
+impl FeishuMessageHandler {
+    async fn should_process_message(&self, message_id: &str) -> bool {
+        const DEDUPE_WINDOW: Duration = Duration::from_secs(300);
+
+        let mut seen = self.seen_messages.lock().await;
+        let now = Instant::now();
+        seen.retain(|(_, timestamp)| now.duration_since(*timestamp) < DEDUPE_WINDOW);
+
+        if seen.iter().any(|(existing, _)| existing == message_id) {
+            return false;
+        }
+
+        seen.push((message_id.to_string(), now));
+        true
+    }
 }
 
 impl EventHandler for FeishuMessageHandler {
@@ -90,6 +111,19 @@ impl EventHandler for FeishuMessageHandler {
                     .transpose()
                     .map_err(|error| feishu_sdk::core::Error::InvalidEventFormat(error.to_string()))?,
             };
+
+            let Some(message_id) = envelope
+                .event
+                .as_ref()
+                .map(|event| event.message.message_id.as_str())
+            else {
+                return Ok(None);
+            };
+
+            if !self.should_process_message(message_id).await {
+                info!(message_id = %message_id, "Feishu duplicate message ignored");
+                return Ok(None);
+            }
 
             FeishuPluginRuntime::handle_event(
                 &self.config,
