@@ -15,8 +15,10 @@ use crate::config::FeishuPluginConfig;
 
 const OUTBOUND_IDEMPOTENCY_TTL_SECS: u64 = 30 * 60;
 const OUTBOUND_IDEMPOTENCY_MAX_SIZE: usize = 1_000;
+const BOT_INFO_CACHE_TTL_SECS: u64 = 30 * 60;
 
 static OUTBOUND_IDEMPOTENCY: OnceLock<Mutex<OutboundIdempotencyStore>> = OnceLock::new();
+static BOT_INFO_CACHE: OnceLock<Mutex<BotInfoCache>> = OnceLock::new();
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct OutboundIdempotencyFile {
@@ -27,6 +29,23 @@ struct OutboundIdempotencyFile {
 struct OutboundIdempotencyStore {
     path: PathBuf,
     entries: HashMap<String, u64>,
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct BotInfoCacheFile {
+    entries: HashMap<String, BotInfoCacheEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BotInfoCacheEntry {
+    open_id: String,
+    updated_at: u64,
+}
+
+#[derive(Debug, Default)]
+struct BotInfoCache {
+    path: PathBuf,
+    entries: HashMap<String, BotInfoCacheEntry>,
 }
 
 impl OutboundIdempotencyStore {
@@ -93,6 +112,54 @@ impl OutboundIdempotencyStore {
     }
 }
 
+impl BotInfoCache {
+    fn load(path: PathBuf) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self {
+                path,
+                entries: HashMap::new(),
+            });
+        }
+
+        let content = fs::read_to_string(&path)?;
+        let file: BotInfoCacheFile = serde_json::from_str(&content)?;
+        Ok(Self {
+            path,
+            entries: file.entries,
+        })
+    }
+
+    fn get_fresh(&mut self, account_id: &str) -> Result<Option<String>> {
+        let now = unix_timestamp();
+        self.entries
+            .retain(|_, entry| now.saturating_sub(entry.updated_at) < BOT_INFO_CACHE_TTL_SECS);
+        self.persist()?;
+        Ok(self.entries.get(account_id).map(|entry| entry.open_id.clone()))
+    }
+
+    fn set(&mut self, account_id: &str, open_id: String) -> Result<()> {
+        self.entries.insert(
+            account_id.to_string(),
+            BotInfoCacheEntry {
+                open_id,
+                updated_at: unix_timestamp(),
+            },
+        );
+        self.persist()
+    }
+
+    fn persist(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = BotInfoCacheFile {
+            entries: self.entries.clone(),
+        };
+        fs::write(&self.path, serde_json::to_string_pretty(&file)?)?;
+        Ok(())
+    }
+}
+
 fn outbound_idempotency_store() -> &'static Mutex<OutboundIdempotencyStore> {
     OUTBOUND_IDEMPOTENCY.get_or_init(|| {
         let path = std::env::current_dir()
@@ -100,6 +167,16 @@ fn outbound_idempotency_store() -> &'static Mutex<OutboundIdempotencyStore> {
             .join(".jellyfish")
             .join("feishu-outbound-dedup.json");
         Mutex::new(OutboundIdempotencyStore::load(path).unwrap_or_default())
+    })
+}
+
+fn bot_info_cache() -> &'static Mutex<BotInfoCache> {
+    BOT_INFO_CACHE.get_or_init(|| {
+        let path = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".jellyfish")
+            .join("feishu-bot-info.json");
+        Mutex::new(BotInfoCache::load(path).unwrap_or_default())
     })
 }
 
@@ -175,6 +252,14 @@ pub async fn send_text(config: &FeishuPluginConfig, message: &OutboundMessage) -
 }
 
 pub async fn fetch_bot_open_id(config: &FeishuPluginConfig) -> Result<String> {
+    if let Some(open_id) = {
+        let mut cache = bot_info_cache().lock().await;
+        cache.get_fresh(&config.default_account)?
+    } {
+        info!(account = %config.default_account, open_id = %open_id, "Feishu bot open_id loaded from cache");
+        return Ok(open_id);
+    }
+
     let token = fetch_tenant_access_token(config).await?;
     let response = Client::new()
         .get(format!(
@@ -191,12 +276,20 @@ pub async fn fetch_bot_open_id(config: &FeishuPluginConfig) -> Result<String> {
         return Err(anyhow!("failed to fetch Feishu bot info with {}: {}", status, value));
     }
 
-    value
+    let open_id = value
         .get("bot")
         .and_then(|bot| bot.get("open_id"))
         .and_then(serde_json::Value::as_str)
         .map(ToString::to_string)
-        .ok_or_else(|| anyhow!("missing bot.open_id in Feishu bot info response"))
+        .ok_or_else(|| anyhow!("missing bot.open_id in Feishu bot info response"))?;
+
+    {
+        let mut cache = bot_info_cache().lock().await;
+        cache.set(&config.default_account, open_id.clone())?;
+    }
+
+    info!(account = %config.default_account, open_id = %open_id, "Feishu bot open_id fetched from API");
+    Ok(open_id)
 }
 
 #[cfg(test)]
@@ -215,6 +308,18 @@ mod tests {
 
         assert!(store.should_send("main", "oc_chat", Some("om_1"), "hello").unwrap());
         assert!(!store.should_send("main", "oc_chat", Some("om_1"), "hello").unwrap());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bot_info_cache_returns_fresh_entry() {
+        let path = temp_store_path("jellyfish-feishu-bot-info.json");
+        let _ = fs::remove_file(&path);
+        let mut cache = BotInfoCache::load(path.clone()).unwrap();
+
+        cache.set("main", "ou_bot".to_string()).unwrap();
+        assert_eq!(cache.get_fresh("main").unwrap().as_deref(), Some("ou_bot"));
 
         let _ = fs::remove_file(path);
     }
