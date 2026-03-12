@@ -17,6 +17,6 @@ impl FeishuChannelPlugin {
     }
 
     pub async fn send_outbound(config: &FeishuPluginConfig, message: &OutboundMessage) -> Result<()> {
-        send_text(config, &message.peer.id, &message.text).await
+        send_text(config, message).await
     }
 }

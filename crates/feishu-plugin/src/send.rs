@@ -1,9 +1,114 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::{Result, anyhow};
+use jellyfish_schema::OutboundMessage;
 use reqwest::Client;
 use serde_json::json;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::config::FeishuPluginConfig;
+
+const OUTBOUND_IDEMPOTENCY_TTL_SECS: u64 = 30 * 60;
+const OUTBOUND_IDEMPOTENCY_MAX_SIZE: usize = 1_000;
+
+static OUTBOUND_IDEMPOTENCY: OnceLock<Mutex<OutboundIdempotencyStore>> = OnceLock::new();
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct OutboundIdempotencyFile {
+    entries: HashMap<String, u64>,
+}
+
+#[derive(Debug, Default)]
+struct OutboundIdempotencyStore {
+    path: PathBuf,
+    entries: HashMap<String, u64>,
+}
+
+impl OutboundIdempotencyStore {
+    fn load(path: PathBuf) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self {
+                path,
+                entries: HashMap::new(),
+            });
+        }
+
+        let content = fs::read_to_string(&path)?;
+        let file: OutboundIdempotencyFile = serde_json::from_str(&content)?;
+        Ok(Self {
+            path,
+            entries: file.entries,
+        })
+    }
+
+    fn should_send(&mut self, account_id: &str, chat_id: &str, reply_to: Option<&str>, text: &str) -> Result<bool> {
+        let now = unix_timestamp();
+        self.entries
+            .retain(|_, timestamp| now.saturating_sub(*timestamp) < OUTBOUND_IDEMPOTENCY_TTL_SECS);
+
+        let key = format!(
+            "{}:{}:{}:{}",
+            account_id,
+            chat_id,
+            reply_to.unwrap_or("-"),
+            text
+        );
+
+        if self.entries.contains_key(&key) {
+            return Ok(false);
+        }
+
+        while self.entries.len() >= OUTBOUND_IDEMPOTENCY_MAX_SIZE {
+            if let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, timestamp)| *timestamp)
+                .map(|(key, _)| key.clone())
+            {
+                self.entries.remove(&oldest_key);
+            } else {
+                break;
+            }
+        }
+
+        self.entries.insert(key, now);
+        self.persist()?;
+        Ok(true)
+    }
+
+    fn persist(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OutboundIdempotencyFile {
+            entries: self.entries.clone(),
+        };
+        fs::write(&self.path, serde_json::to_string_pretty(&file)?)?;
+        Ok(())
+    }
+}
+
+fn outbound_idempotency_store() -> &'static Mutex<OutboundIdempotencyStore> {
+    OUTBOUND_IDEMPOTENCY.get_or_init(|| {
+        let path = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(".jellyfish")
+            .join("feishu-outbound-dedup.json");
+        Mutex::new(OutboundIdempotencyStore::load(path).unwrap_or_default())
+    })
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 pub async fn fetch_tenant_access_token(config: &FeishuPluginConfig) -> Result<String> {
     let response = Client::new()
@@ -26,7 +131,23 @@ pub async fn fetch_tenant_access_token(config: &FeishuPluginConfig) -> Result<St
         .ok_or_else(|| anyhow!("missing tenant_access_token in Feishu response"))
 }
 
-pub async fn send_text(config: &FeishuPluginConfig, chat_id: &str, text: &str) -> Result<()> {
+pub async fn send_text(config: &FeishuPluginConfig, message: &OutboundMessage) -> Result<()> {
+    let chat_id = &message.peer.id;
+    let text = &message.text;
+    let should_send = {
+        let mut store = outbound_idempotency_store().lock().await;
+        store.should_send(
+            &message.account_id,
+            chat_id,
+            message.reply_to_message_id.as_deref(),
+            text,
+        )?
+    };
+    if !should_send {
+        info!(chat_id = %chat_id, text = %text, "Feishu outbound message suppressed by idempotency store");
+        return Ok(());
+    }
+
     let token = fetch_tenant_access_token(config).await?;
     let response = Client::new()
         .post(format!(
@@ -76,4 +197,25 @@ pub async fn fetch_bot_open_id(config: &FeishuPluginConfig) -> Result<String> {
         .and_then(serde_json::Value::as_str)
         .map(ToString::to_string)
         .ok_or_else(|| anyhow!("missing bot.open_id in Feishu bot info response"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_store_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(name)
+    }
+
+    #[test]
+    fn outbound_idempotency_blocks_duplicate_reply() {
+        let path = temp_store_path("jellyfish-feishu-outbound-idempotency.json");
+        let _ = fs::remove_file(&path);
+        let mut store = OutboundIdempotencyStore::load(path.clone()).unwrap();
+
+        assert!(store.should_send("main", "oc_chat", Some("om_1"), "hello").unwrap());
+        assert!(!store.should_send("main", "oc_chat", Some("om_1"), "hello").unwrap());
+
+        let _ = fs::remove_file(path);
+    }
 }
