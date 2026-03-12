@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 
 use crate::config::FeishuPluginConfig;
-use crate::send::fetch_tenant_access_token;
+use crate::send::{fetch_bot_open_id, fetch_tenant_access_token};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeishuProbeResult {
@@ -9,6 +9,7 @@ pub struct FeishuProbeResult {
     pub connection_mode: &'static str,
     pub account_id: String,
     pub app_id_prefix: String,
+    pub bot_open_id: Option<String>,
 }
 
 pub async fn probe_feishu(config: &FeishuPluginConfig) -> Result<FeishuProbeResult> {
@@ -16,6 +17,7 @@ pub async fn probe_feishu(config: &FeishuPluginConfig) -> Result<FeishuProbeResu
         return Err(anyhow!("Feishu plugin is disabled"));
     }
     let _ = fetch_tenant_access_token(config).await?;
+    let bot_open_id = fetch_bot_open_id(config).await.ok();
 
     Ok(FeishuProbeResult {
         domain: config.domain.open_base_url().to_string(),
@@ -25,5 +27,6 @@ pub async fn probe_feishu(config: &FeishuPluginConfig) -> Result<FeishuProbeResu
         },
         account_id: config.default_account.clone(),
         app_id_prefix: config.account.app_id.chars().take(8).collect(),
+        bot_open_id,
     })
 }

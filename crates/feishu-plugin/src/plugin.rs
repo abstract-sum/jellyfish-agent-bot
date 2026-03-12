@@ -6,6 +6,7 @@ use tracing::{info, warn};
 use crate::channel::FeishuChannelPlugin;
 use crate::config::FeishuPluginConfig;
 use crate::parse::parse_inbound_message;
+use crate::send::fetch_bot_open_id;
 use crate::types::FeishuEventEnvelope;
 use crate::websocket::{ensure_websocket_mode, start_websocket_listener};
 
@@ -18,15 +19,21 @@ impl FeishuPluginRuntime {
         bot_open_id: Option<String>,
         dry_run: bool,
     ) -> Result<()> {
+        let resolved_bot_open_id = match bot_open_id {
+            Some(value) if !value.trim().is_empty() => Some(value),
+            _ => fetch_bot_open_id(config).await.ok(),
+        };
+
         info!(
             domain = %config.domain.open_base_url(),
             account = %config.default_account,
             require_mention = config.require_mention,
             dry_run,
+            bot_open_id = ?resolved_bot_open_id,
             "starting Feishu plugin runtime"
         );
         ensure_websocket_mode(config)?;
-        start_websocket_listener(config, gateway, bot_open_id, dry_run).await
+        start_websocket_listener(config, gateway, resolved_bot_open_id, dry_run).await
     }
 
     pub async fn handle_event(

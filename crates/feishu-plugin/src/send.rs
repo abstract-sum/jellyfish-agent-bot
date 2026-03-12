@@ -52,3 +52,28 @@ pub async fn send_text(config: &FeishuPluginConfig, chat_id: &str, text: &str) -
     info!(chat_id = %chat_id, text = %text, "Feishu outbound message sent");
     Ok(())
 }
+
+pub async fn fetch_bot_open_id(config: &FeishuPluginConfig) -> Result<String> {
+    let token = fetch_tenant_access_token(config).await?;
+    let response = Client::new()
+        .get(format!(
+            "{}/open-apis/bot/v3/info",
+            config.domain.open_base_url()
+        ))
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    let status = response.status();
+    let value: serde_json::Value = response.json().await?;
+    if !status.is_success() {
+        return Err(anyhow!("failed to fetch Feishu bot info with {}: {}", status, value));
+    }
+
+    value
+        .get("bot")
+        .and_then(|bot| bot.get("open_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow!("missing bot.open_id in Feishu bot info response"))
+}

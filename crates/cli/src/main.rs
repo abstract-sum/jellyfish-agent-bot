@@ -113,6 +113,7 @@ async fn main() -> Result<()> {
                 println!("Connection mode: {}", probe.connection_mode);
                 println!("Default account: {}", probe.account_id);
                 println!("App ID prefix: {}", probe.app_id_prefix);
+                println!("Bot open_id: {}", probe.bot_open_id.as_deref().unwrap_or("unavailable"));
                 println!("Require mention in groups: {}", config.require_mention);
             }
             ChannelCommands::FeishuDoctor => {
@@ -122,6 +123,8 @@ async fn main() -> Result<()> {
                 println!("FEISHU_APP_SECRET/LARK_APP_SECRET present: {}", has_app_secret);
                 match FeishuPluginConfig::from_env() {
                     Ok(config) => {
+                        let probe_result = probe_feishu(&config).await;
+                        let probe = probe_result.as_ref().ok();
                         println!("Domain: {}", config.domain.open_base_url());
                         println!(
                             "Connection mode: {}",
@@ -132,7 +135,11 @@ async fn main() -> Result<()> {
                         );
                         println!("Default account: {}", config.default_account);
                         println!("Require mention in groups: {}", config.require_mention);
-                        match probe_feishu(&config).await {
+                        println!(
+                            "Bot open_id: {}",
+                            probe.and_then(|result| result.bot_open_id.as_deref()).unwrap_or("unavailable")
+                        );
+                        match probe_result {
                             Ok(_) => println!("Probe: ok"),
                             Err(error) => println!("Probe: failed ({error})"),
                         }
@@ -145,11 +152,19 @@ async fn main() -> Result<()> {
             ChannelCommands::FeishuStart { bot_open_id, dry_run } => {
                 let feishu_config = FeishuPluginConfig::from_env()?;
                 let gateway = Arc::new(JellyfishGateway::new(config.clone()));
+                let probe = probe_feishu(&feishu_config).await.ok();
                 println!("Starting Feishu websocket listener...");
                 println!("Domain: {}", feishu_config.domain.open_base_url());
                 println!("Default account: {}", feishu_config.default_account);
                 println!("Require mention in groups: {}", feishu_config.require_mention);
                 println!("Dry run: {}", dry_run);
+                println!(
+                    "Bot open_id: {}",
+                    bot_open_id
+                        .as_deref()
+                        .or_else(|| probe.as_ref().and_then(|result| result.bot_open_id.as_deref()))
+                        .unwrap_or("auto-resolution unavailable")
+                );
                 FeishuPluginRuntime::start(&feishu_config, gateway, bot_open_id, dry_run).await?;
             }
         },
