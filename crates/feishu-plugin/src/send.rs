@@ -17,6 +17,8 @@ const OUTBOUND_IDEMPOTENCY_TTL_SECS: u64 = 30 * 60;
 const OUTBOUND_IDEMPOTENCY_MAX_SIZE: usize = 1_000;
 const BOT_INFO_CACHE_TTL_SECS: u64 = 30 * 60;
 
+pub const BOT_INFO_REFRESH_INTERVAL_SECS: u64 = 30 * 60;
+
 static OUTBOUND_IDEMPOTENCY: OnceLock<Mutex<OutboundIdempotencyStore>> = OnceLock::new();
 static BOT_INFO_CACHE: OnceLock<Mutex<BotInfoCache>> = OnceLock::new();
 
@@ -260,6 +262,22 @@ pub async fn fetch_bot_open_id(config: &FeishuPluginConfig) -> Result<String> {
         return Ok(open_id);
     }
 
+    fetch_bot_open_id_force(config).await
+}
+
+pub async fn fetch_bot_open_id_force(config: &FeishuPluginConfig) -> Result<String> {
+    let open_id = fetch_bot_open_id_from_api(config).await?;
+
+    {
+        let mut cache = bot_info_cache().lock().await;
+        cache.set(&config.default_account, open_id.clone())?;
+    }
+
+    info!(account = %config.default_account, open_id = %open_id, "Feishu bot open_id fetched from API");
+    Ok(open_id)
+}
+
+async fn fetch_bot_open_id_from_api(config: &FeishuPluginConfig) -> Result<String> {
     let token = fetch_tenant_access_token(config).await?;
     let response = Client::new()
         .get(format!(
@@ -283,12 +301,6 @@ pub async fn fetch_bot_open_id(config: &FeishuPluginConfig) -> Result<String> {
         .map(ToString::to_string)
         .ok_or_else(|| anyhow!("missing bot.open_id in Feishu bot info response"))?;
 
-    {
-        let mut cache = bot_info_cache().lock().await;
-        cache.set(&config.default_account, open_id.clone())?;
-    }
-
-    info!(account = %config.default_account, open_id = %open_id, "Feishu bot open_id fetched from API");
     Ok(open_id)
 }
 

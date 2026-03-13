@@ -9,11 +9,13 @@ use feishu_sdk::ws::StreamClient;
 use jellyfish_gateway::GatewayService;
 use rustls::crypto::{CryptoProvider, ring::default_provider};
 use tokio::sync::Mutex;
+use tokio::time::{Duration, interval};
 use tracing::info;
 
 use crate::config::{FeishuConnectionMode, FeishuPluginConfig};
 use crate::dedup::{DedupStore, default_dedup_path};
 use crate::plugin::FeishuPluginRuntime;
+use crate::send::{BOT_INFO_REFRESH_INTERVAL_SECS, fetch_bot_open_id_force};
 use crate::types::FeishuEventEnvelope;
 
 pub async fn start_websocket_listener(
@@ -48,6 +50,8 @@ pub async fn start_websocket_listener(
         "Feishu websocket listener configured"
     );
 
+    spawn_bot_open_id_refresh(config.clone());
+
     StreamClient::builder(sdk_config)
         .event_dispatcher(dispatcher)
         .build()?
@@ -60,6 +64,33 @@ fn ensure_rustls_provider() {
     let _ = CryptoProvider::get_default().or_else(|| {
         default_provider().install_default().ok()?;
         CryptoProvider::get_default()
+    });
+}
+
+fn spawn_bot_open_id_refresh(config: FeishuPluginConfig) {
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(BOT_INFO_REFRESH_INTERVAL_SECS));
+        ticker.tick().await;
+        info!(
+            account = %config.default_account,
+            interval_secs = BOT_INFO_REFRESH_INTERVAL_SECS,
+            "Feishu bot open_id background refresh scheduled"
+        );
+        loop {
+            ticker.tick().await;
+            match fetch_bot_open_id_force(&config).await {
+                Ok(open_id) => info!(
+                    account = %config.default_account,
+                    open_id = %open_id,
+                    "Feishu bot open_id refreshed in background"
+                ),
+                Err(error) => info!(
+                    account = %config.default_account,
+                    error = %error,
+                    "Feishu bot open_id background refresh failed"
+                ),
+            }
+        }
     });
 }
 
